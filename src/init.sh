@@ -116,16 +116,7 @@ echo "hartwell-os: init at $(cut -d' ' -f1 /proc/uptime)s after kernel start"
 # The shipped unit has no shell; this is the only door, and it needs the boot
 # menu, i.e. someone standing at the machine.
 if grep -q 'hwo.rescue=1' /proc/cmdline 2>/dev/null; then
-    export PATH="/:/bin:/sbin:/usr/bin:/usr/sbin"
-    echo "hartwell-os: RESCUE MODE - shell on this console, UI not started"
-    echo "hartwell-os: type 'hwo errs' for the error log, 'exit' then reboot to leave"
-    /hwo errs 2>/dev/null
-    # cttyhack is not in every busybox build; /dev/console is the same tty the
-    # kernel is printing to, so the shell inherits it either way.
-    if [ -x /bin/cttyhack ]; then
-        exec setsid cttyhack sh -i
-    fi
-    exec setsid sh -i </dev/console >/dev/console 2>&1
+    . /rescue.sh
 fi
 
 if [ -x /agent.sh ] && /hwo license >/dev/null 2>&1; then

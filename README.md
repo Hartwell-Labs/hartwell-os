@@ -18,7 +18,7 @@ software emulation (TCG). No bare-metal measurement yet.
 | Runtime | `hwo` — one static binary, 1.2 MB, no libc on target |
 | Image | bootable ISO, 25 MB, El Torito (BIOS + UEFI) + initramfs |
 | Display | 1280×800 framebuffer, 32 bpp, drawn by `hwo` itself — no X, no Wayland |
-| UI | 4 screens: Overview, System, Licence, Media; **keyboard + mouse** navigation (1/2/3/4 or F1–F4) |
+| UI | left navigation rail with 4 screens: Overview, System, Licence, Media; **keyboard + mouse** (1–4 / F1–F4, clickable) |
 | Init | `/init` as PID 1, mounts proc/sys/devtmpfs, supervises the UI |
 | Crash policy | 5 UI exits → automatic reboot |
 | Errors | every failure has a stable code (`F`/`E`/`W` + 4 digits), echoed to serial and `/run/hwo.err`, counted in a **System** screen chip (amber `WARN`, red `ERR`); the full book is `docs/errors.md` |
@@ -247,7 +247,9 @@ src/hwo.c        appliance runtime (id / license / ui / fbprobe / vcsa)
 src/hwo.h        runtime <-> UI interface
 src/errors.c/.h  error codes, /run/hwo.err, serial echo, `hwo errs`
 docs/errors.md   the error book: every code, symptom → fix → verify
-src/fbui.c       the whole graphical interface: layout, input, present()
+src/fbui.c       the whole graphical interface: rail, pages, input, present()
+src/rescue.sh    rescue console banner, helpers and shell dressing
+tools/hwo-view.py  live view of a machine in a browser, with forwarded input
 src/font.h       generated bitmap atlases (393 KB)
 src/init.sh      PID 1: mount, load DRM modules, supervise the UI
 src/agent.sh     fleet agent (DHCP-aware, outbound HTTP)

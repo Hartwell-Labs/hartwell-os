@@ -39,6 +39,7 @@ python3 tools/stage_modules.py "$ROOT" \
 echo "==> installing init, agent, content"
 cp src/init.sh  "$ROOT/init";      chmod 0755 "$ROOT/init"
 cp src/agent.sh "$ROOT/agent.sh";  chmod 0755 "$ROOT/agent.sh"
+cp src/rescue.sh "$ROOT/rescue.sh"; chmod 0755 "$ROOT/rescue.sh"
 cp src/content.txt "$ROOT/etc/hartwell/content.txt"
 
 # media: a PNG sequence embedded in the initramfs so the Media screen works on
@@ -88,8 +89,11 @@ cp build/vmlinuz  build/iso/boot/vmlinuz
 cp build/initrd   build/iso/boot/initrd
 cat > build/iso/isolinux/isolinux.cfg <<'CFG'
 DEFAULT hartwell
-TIMEOUT 20
-PROMPT 1
+# Ten seconds of quiet boot. Any key during that window still opens the prompt,
+# which is how a technician reaches "hartwell rescue"; without a key the unit
+# always boots on its own, so an unattended machine can never sit at "boot:".
+TIMEOUT 100
+PROMPT 0
 
 LABEL hartwell
   KERNEL /boot/vmlinuz
@@ -124,7 +128,7 @@ docker run --rm -v "$PWD/build/iso:/iso" -v "$PWD/dist:/out" -v "$PWD/keys:/keys
   # UEFI: El Torito FAT image holding a GRUB EFI binary. GRUB reads the ISO9660
   # filesystem, so the kernel and initrd stay only once, at /boot in the ISO.
   cat > /tmp/grub.cfg <<CFG
-set timeout=3
+set timeout=10
 search --no-floppy --set=root --file /boot/initrd
 menuentry "Hartwell OS" {
   linux /boot/vmlinuz console=tty0 quiet rdinit=/init video=1280x800

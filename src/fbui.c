@@ -106,6 +106,14 @@ static void fill(int x, int y, int w, int h, unsigned c)
     if (x + w > W) w = W - x;
     if (y + h > H) h = H - y;
     if (w <= 0 || h <= 0) return;
+    if (bytespp == 4) {
+        unsigned v = 0xFF000000u | (c & 0xFFFFFF);
+        for (int j = 0; j < h; j++) {
+            unsigned *row = (unsigned *)(cv + (size_t)(y + j) * stride) + x;
+            for (int i = 0; i < w; i++) row[i] = v;
+        }
+        return;
+    }
     for (int j = 0; j < h; j++)
         for (int i = 0; i < w; i++)
             blend(x + i, y + j, c, 255);
@@ -154,7 +162,14 @@ static void panel(int x, int y, int w, int h, unsigned bgc)
 {
     rrect(x, y, w, h, 12, LINE);
     rrect(x + 1, y + 1, w - 2, h - 2, 11, bgc);
+    /* a one-pixel highlight on the top edge and a shadow underneath read as
+       a raised surface on a dark screen, and cost two lines of pixels */
+    for (int i = 14; i < w - 14; i++)
+        blend(x + i, y + 1, 0xFFFFFF, 10);
+    for (int i = 14; i < w - 14; i++)
+        blend(x + i, y + h, 0x000000, 70);
 }
+
 
 /* ---------- text ---------- */
 
@@ -215,10 +230,45 @@ static void text_wrap(const Face *f, int x, int y, int maxw, int lineh, unsigned
     if (n) text(f, x, y, c, line);
 }
 
+/* draw as much of s as fits in maxw, with a quiet ellipsis */
+static void text_clip(const Face *f, int x, int y, unsigned c, const char *s, int maxw)
+{
+    int w = 0;
+    const char *p = s;
+    for (; *p; p++) {
+        char one[2] = { *p, 0 };
+        int cw = text_w(f, one);
+        if (w + cw > maxw - 12) {
+            /* write the prefix that fits, then two quiet dots */
+            int px = x;
+            for (const char *q = s; q < p; q++) {
+                char o[2] = { *q, 0 };
+                text(f, px, y, c, o);
+                px += text_w(f, o);
+            }
+            text(f, px, y, FAINT, "..");
+            return;
+        }
+        w += cw;
+    }
+    text(f, x, y, c, s);
+}
+
 static void text_r(const Face *f, int right, int y, unsigned c, const char *s)
 {
     text(f, right - text_w(f, s), y, c, s);
 }
+/* Captions are tracked a little: uppercase mono at normal spacing disappears
+   into a dark UI, one extra pixel per glyph makes them read as labels. */
+static void cap(const Face *f, int x, int y, unsigned c, const char *s, int track)
+{
+    for (; *s; s++) {
+        char one[2] = { *s, 0 };
+        text(f, x, y, c, one);
+        x += text_w(f, one) + track;
+    }
+}
+
 
 /* ---------- state ---------- */
 
@@ -335,27 +385,80 @@ static void mem_line(char *out, size_t n)
 
 /* ---------- pages ---------- */
 
+#define RAIL 236
+
+static void build_chrome_bg(void)
+{
+    vgrad(0, 0, W, H, BG, BG2);
+    /* left rail: the whole navigation lives here, so the content keeps the
+       full height of the screen instead of losing a strip to a tab bar */
+    fill(0, 0, RAIL, H, PANEL2);
+    fill(RAIL, 0, 1, H, LINE);
+    vgrad(0, 0, 3, H, GREEN, CYAN);
+    rrect(28, 30, 13, 13, 3, GREEN);
+    text(&fb_bold, 52, 24, TEXT, "HARTWELL");
+    text(&fb_bold, 52, 47, DIM, "OS 1.0");
+}
+
+static unsigned char *chrome_bg;      /* static background, built once */
+
 static void draw_chrome(void)
 {
     nhits = 0;
-    vgrad(0, 0, W, H, BG, BG2);
+    size_t fbsz = (size_t)stride * H;
+    if (chrome_bg) {
+        memcpy(cv, chrome_bg, fbsz);
+    } else {
+        build_chrome_bg();
+        chrome_bg = malloc(fbsz);
+        if (chrome_bg) memcpy(chrome_bg, cv, fbsz);
+    }
 
-    /* top bar */
-    fill(0, 0, W, 72, PANEL2);
-    fill(0, 71, W, 1, LINE);
-    rrect(36, 30, 12, 12, 3, GREEN);
-    text(&fb_bold, 60, 24, TEXT, "HARTWELL OS");
+    /* ---- navigation ---- */
+    static const char *names[4] = { "Overview", "System", "Licence", "Media" };
+    int ny = 118;
+    for (int i = 0; i < 4; i++) {
+        int active = page == i;
+        if (active) {
+            rrect(16, ny - 12, RAIL - 32, 52, 10, LINE);
+            rrect(17, ny - 11, RAIL - 34, 50, 9, PANEL);
+            fill(17, ny + 2, 3, 24, GREEN);
+        }
+        rrect(40, ny + 6, 7, 7, 4, active ? GREEN : FAINT);
+        text(active ? &fb_bold : &fb_body, 60, ny, active ? TEXT : DIM, names[i]);
+        hit_add(16, ny - 12, RAIL - 32, 52, ACT_PAGE0 + i);
+        ny += 62;
+    }
+
+    cap(&fb_bold, 28, ny + 16, 0x3A4756, "KEYS 1-4", 2);
+
+    /* ---- rail footer: state, identity, clock ---- */
+    int fy = H - 132;
+    fill(28, fy, RAIL - 56, 1, LINE);
+
+    unsigned col = is_licensed ? GREEN : RED;
+    const char *word = is_licensed ? "LICENSED" : "UNLICENSED";
+    int pw = text_w(&fb_bold, word) + 42;
+    rrect(28, fy + 22, pw, 30, 15, LINE);
+    rrect(29, fy + 23, pw - 2, 28, 14, PANEL);
+    rrect(30 + 10, fy + 33, 8, 8, 4, col);
+    text(&fb_bold, 30 + 24, fy + 29, col, word);
+
+    text(&fb_body, 28, fy + 66, FAINT, dev_id);
 
     char clock[16];
     time_t now = time(NULL);
     struct tm tm;
     gmtime_r(&now, &tm);
-    strftime(clock, sizeof clock, "%H:%M:%S", &tm);
-    text_r(&fb_mono, W - 36, 26, TEXT, clock);
-    text_r(&fb_mono, W - 36 - text_w(&fb_mono, clock) - 28, 26, FAINT, "UTC");
-    char tag[64];
-    snprintf(tag, sizeof tag, "%s", dev_id);
-    text_r(&fb_body, W - 36 - text_w(&fb_mono, clock) - 28 - text_w(&fb_mono, "UTC") - 40, 27, DIM, tag);
+    strftime(clock, sizeof clock, "%H:%M UTC", &tm);
+    text(&fb_mono, 28, fy + 90, TEXT, clock);
+
+    /* the focused screen gets its name and the action hint top-right, where a
+       dashboard usually puts its context line */
+    static const char *eyebrow[4] = { "MACHINE", "DIAGNOSTICS", "ENTITLEMENT", "PLAYBACK" };
+    cap(&fb_bold, RAIL + 40, 30, FAINT, eyebrow[page], 2);
+    text_r(&fb_body, W - 40, 27, 0x3E4C5C,
+           is_licensed ? "keyboard 1-4  /  click" : "type the key, then ENTER");
 }
 
 /* Pilled status chip: a tinted capsule with a dot, used instead of plain text
@@ -389,15 +492,15 @@ static void tile(int x, int y, int w, int h, const char *caption,
 {
     panel(x, y, w, h, PANEL);
     fill(x + 1, y + 18, 3, h - 36, accent);
-    text(&fb_bold, x + 26, y + 18, FAINT, caption);
+    cap(&fb_bold, x + 26, y + 18, FAINT, caption, 2);
     text(&fb_h1, x + 24, y + 48, TEXT, value);
-    if (sub && sub[0]) text(&fb_mono, x + 26, y + h - 32, DIM, sub);
+    if (sub && sub[0]) text_clip(&fb_mono, x + 26, y + h - 32, DIM, sub, w - 52);
 }
 
 static void draw_overview(void)
 {
-    int cx = 40, cw = W - 80;
-    int hy = 100, hh = 316;
+    int cx = RAIL + 40, cw = W - RAIL - 80;
+    int hy = 84, hh = 306;
 
     /* ---- status card ---- */
     panel(cx, hy, cw, hh, PANEL);
@@ -427,8 +530,7 @@ static void draw_overview(void)
         int by = y + row * 44;
         if (content.label[i][0]) {
             text(&fb_body, bx, by, FAINT, content.label[i]);
-            int lw = text_w(&fb_body, content.label[i]);
-            text(&fb_body, bx + lw + 18, by, TEXT, content.value[i]);
+            text(&fb_body, bx + 136, by, TEXT, content.value[i]);
         } else {
             text(&fb_body, bx, by, TEXT, content.value[i]);
         }
@@ -452,7 +554,7 @@ static void draw_overview(void)
     tile(cx + gw + gap, gy, gw, gh, "MEMORY", memv, mems, GREEN);
 
     unsigned fcol = !strcmp(st, "online") ? GREEN : !strcmp(st, "offline") ? AMBER : DIM;
-    tile(cx + 2 * (gw + gap), gy, gw, gh, "FLEET", st, "poll 30 s  /  outbound only", fcol);
+    tile(cx + 2 * (gw + gap), gy, gw, gh, "FLEET", st, "outbound poll / 30 s", fcol);
 
     if (tm > 0) {
         int used = (int)(((tm - fm) * 100) / tm);
@@ -478,7 +580,7 @@ static void draw_overview(void)
 
 static void draw_system(void)
 {
-    int cx = 40, cy = 100, cw = W - 80, ch = 376;
+    int cx = RAIL + 40, cy = 84, cw = W - RAIL - 80, ch = 366;
     panel(cx, cy, cw, ch, PANEL);
     fill(cx + 1, cy + 20, 3, ch - 40, is_licensed ? GREEN : RED);
     text(&fb_h1, cx + 36, cy + 30, TEXT, "System");
@@ -514,7 +616,7 @@ static void draw_system(void)
     snprintf(vals[2], 128, "%s", up);
     snprintf(vals[3], 128, "%s", mem);
     snprintf(vals[4], 128, "%s", fbline);
-    snprintf(vals[5], 128, "hwo 1.0 / PID 1 supervisor");
+    snprintf(vals[5], 128, "hwo 1.0 / PID 1");
     snprintf(vals[7], 128, "%s", is_licensed ? lic_key : "none");
     if (hwo_state_present()) {
         snprintf(vals[6], 128, "HWO_CFG mounted at /state");
@@ -525,7 +627,7 @@ static void draw_system(void)
         size_t l = strlen(st);
         const char *tail = l > 110 ? st + l - 110 : st;
         if (strstr(st, "failed")) snprintf(vals[6], 128, "%.110s", tail);
-        else                    snprintf(vals[6], 128, "RAM only, no HWO_CFG partition");
+        else                    snprintf(vals[6], 128, "RAM only (no HWO_CFG)");
     }
 
     fill(cx + 36, cy + 128, cw - 72, 1, LINE);
@@ -534,21 +636,23 @@ static void draw_system(void)
         int col = i % 2, row = i / 2;
         int bx = cx + 36 + col * half;
         int by = cy + 152 + row * 44;
-        text(&fb_body, bx, by, DIM, labels[i]);
-        int lw = text_w(&fb_body, labels[i]);
-        text(&fb_mono, bx + lw + 22, by - 2, i == 7 && !is_licensed ? RED : TEXT, vals[i]);
+        /* values sit in one column per half, so the eye can scan the list
+           instead of hunting for where each label ends */
+        text(&fb_body, bx, by, FAINT, labels[i]);
+        text_clip(&fb_mono, bx + 148, by - 2, i == 7 && !is_licensed ? RED : TEXT,
+                  vals[i], half - 148 - 16);
     }
 
     int gy = cy + ch + 24, gh = 150, gw = (cw - 24) / 2;
     panel(cx, gy, gw, gh, PANEL);
     panel(cx + gw + 24, gy, gw, gh, PANEL);
 
-    text(&fb_bold, cx + 28, gy + 22, FAINT, "SESSION");
+    cap(&fb_bold, cx + 28, gy + 22, FAINT, "SESSION", 2);
     text(&fb_mono, cx + 28, gy + 58, TEXT, "no shell / no login");
     text(&fb_mono, cx + 28, gy + 88, DIM, "no listening sockets");
     text(&fb_mono, cx + 28, gy + 118, DIM, "5 UI exits -> reboot");
 
-    text(&fb_bold, cx + gw + 52, gy + 22, FAINT, "AGENT");
+    cap(&fb_bold, cx + gw + 52, gy + 22, FAINT, "AGENT", 2);
     char st[64] = "local";
     hwo_read("/run/fleet.status", st, sizeof st);
     text(&fb_mono, cx + gw + 52, gy + 58, TEXT, st);
@@ -561,7 +665,7 @@ static void draw_system(void)
 
 static void draw_license(void)
 {
-    int cx = 40, cy = 100, cw = W - 80, ch = is_licensed ? 372 : 430;
+    int cx = RAIL + 40, cy = 84, cw = W - RAIL - 80, ch = is_licensed ? 360 : 420;
     panel(cx, cy, cw, ch, PANEL);
     fill(cx + 1, cy + 20, 3, ch - 40, is_licensed ? GREEN : RED);
     text(&fb_h1, cx + 36, cy + 30, TEXT, is_licensed ? "Licence" : "Activate this device");
@@ -587,7 +691,7 @@ static void draw_license(void)
 
         int gy = cy + ch + 24, gh = 150;
         panel(cx, gy, cw, gh, PANEL);
-        text(&fb_bold, cx + 28, gy + 22, FAINT, "WHAT THIS LICENCE COVERS");
+        cap(&fb_bold, cx + 28, gy + 22, FAINT, "WHAT THIS LICENCE COVERS", 2);
         text(&fb_body, cx + 28, gy + 60, TEXT, "One machine, perpetual use. Updates for 12 months. Transfers with the DMI UUID.");
         text(&fb_body, cx + 28, gy + 96, DIM, "Support: business@hartwell-labs.pl");
         return;
@@ -726,7 +830,7 @@ static void media_load(int idx)
 
 static void draw_media(void)
 {
-    int cx = 40, cy = 100, cw = W - 80, ch = 430;
+    int cx = RAIL + 40, cy = 84, cw = W - RAIL - 80, ch = 430;
     panel(cx, cy, cw, ch, PANEL);
     text(&fb_h1, cx + 36, cy + 34, TEXT, "Media");
 
@@ -765,44 +869,7 @@ static void draw_media(void)
 
 static void draw_footer(void)
 {
-    int y = H - 64;
-    fill(0, y, W, 64, PANEL2);
-    fill(0, y, W, 1, LINE);
-
-    /* licence pill */
-    unsigned col = is_licensed ? GREEN : RED;
-    const char *word = is_licensed ? "LICENSED" : "UNLICENSED";
-    int pw = text_w(&fb_bold, word) + 44;
-    rrect(36, y + 18, pw, 28, 14, col & 0xFFFFFF);
-    fill(36 + 1, y + 19, pw - 2, 26, PANEL2);
-    fill(36 + 12, y + 28, 8, 8, col);
-    text(&fb_bold, 36 + 26, y + 22, col, word);
-
-    /* page tabs, also clickable */
-    const char *tabs[] = { is_licensed ? "1  Overview" : "F1 Overview",
-                           is_licensed ? "2  System"   : "F2 System",
-                           "3  Licence", "4  Media" };
-    int tw[4], total = 0;
-    for (int i = 0; i < 4; i++) {
-        tw[i] = text_w(&fb_body, tabs[i]);
-        total += tw[i] + (i ? 40 : 0);
-    }
-    int tx = W / 2 - total / 2;
-    for (int i = 0; i < 4; i++) {
-        unsigned c = page == i ? TEXT : FAINT;
-        if (page == i) {
-            fill(tx - 12, y + 22, tw[i] + 24, 22, PANEL);
-            rrect(tx - 12, y + 54, tw[i] + 24, 3, 2, GREEN);
-        }
-        text(&fb_body, tx, y + 24, c, tabs[i]);
-        hit_add(tx - 12, y + 14, tw[i] + 24, 44, ACT_PAGE0 + i);
-        tx += tw[i] + 40;
-    }
-
-    if (is_licensed) text_r(&fb_mono, W - 36, y + 24, FAINT, lic_key);
-    else if (page == 2 && !is_licensed)
-                     text_r(&fb_body, W - 36, y + 24, FAINT, "type the key, then ENTER");
-    else             text_r(&fb_body, W - 36, y + 24, FAINT, "no shell / no remote login");
+    /* nothing to draw: navigation and state live in the rail */
 }
 
 /* ---------- pointer ---------- */
