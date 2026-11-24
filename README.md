@@ -259,3 +259,14 @@ tools/stage_modules.py  kernel module dependency resolver
 render_console.py  vcsa dump → PNG
 index.html       product page
 ```
+
+## Licence and what is open
+
+Source is MIT (`LICENSE`). The trust root (`keys/`) and the signed, licence-baked
+images are not in the repository — see `LICENSING.md` for the exact boundary and
+for what a licence actually buys.
+
+`web/` holds the browser port of the interface: the same drawing primitives,
+layout arithmetic and glyph bitmaps as `src/fbui.c`, rendered to a canvas. It is
+what runs at <https://hartwell-labs.pl/os/>. Build the font atlas with
+`node web/build-font.mjs > web/font.json` after changing `src/font.h`.
