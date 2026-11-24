@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hartwell OS — one machine, one job — $149 per device</title>
+<style>
+  :root {
+    --bg: #07090c; --panel: #0d1117; --line: #1d2634; --fg: #d6e2ee;
+    --dim: #7d8ea3; --green: #4ade80; --amber: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+  header { border-bottom: 1px solid var(--line); }
+  .bar { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; }
+  .brand { font-family: ui-monospace, monospace; letter-spacing: .14em; font-size: 13px; color: var(--green); }
+  .tag { font-family: ui-monospace, monospace; font-size: 12px; color: var(--dim); }
+  h1 { font-size: 44px; line-height: 1.1; letter-spacing: -.02em; margin: 56px 0 16px; }
+  h1 span { color: var(--green); }
+  .lead { font-size: 19px; color: #a9b8c9; max-width: 660px; margin: 0 0 32px; }
+  .grid { display: grid; grid-template-columns: 1.25fr .75fr; gap: 28px; align-items: start; margin: 40px 0; }
+  .shot { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #000; }
+  .shot img { display: block; width: 100%; }
+  .shot .cap {
+    font-family: ui-monospace, monospace; font-size: 11px; color: var(--dim);
+    padding: 8px 12px; border-top: 1px solid var(--line); background: var(--panel);
+  }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 22px; }
+  .price { font-size: 40px; font-weight: 700; letter-spacing: -.02em; }
+  .price small { font-size: 14px; color: var(--dim); font-weight: 400; display: block; margin-top: 4px; }
+  .card ul { margin: 18px 0 22px; padding-left: 18px; color: #b6c4d4; font-size: 15px; }
+  .card li { margin: 7px 0; }
+  .btn {
+    display: block; text-align: center; text-decoration: none; font-weight: 600;
+    background: var(--green); color: #04120a; padding: 13px 16px; border-radius: 8px;
+  }
+  .btn.ghost { background: transparent; color: var(--fg); border: 1px solid var(--line); margin-top: 10px; }
+  .mono { font-family: ui-monospace, monospace; }
+  pre {
+    background: #05070a; border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; overflow: auto; font-size: 13px; color: #c8d6e5;
+  }
+  .cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin: 34px 0 10px; }
+  .input { color: var(--fg); }
+  .input span { color: var(--green); }
+  .col h3 { font-size: 15px; margin: 0 0 8px; color: var(--fg); }
+  .col p { margin: 0; color: var(--dim); font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; margin: 26px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 500; font-family: ui-monospace, monospace; font-size: 12px; letter-spacing: .06em; }
+  .warn {
+    border: 1px solid #3a2f12; background: #171106; color: #e9c877;
+    padding: 14px 16px; border-radius: 8px; font-size: 14px; margin: 30px 0;
+  }
+  .input { margin: 12px 0; }
+  .input span { color: var(--green); }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; margin: 30px 0; }
+  .two p { color: var(--dim); font-size: 14px; margin: 0 0 12px; }
+  h2 { font-size: 24px; margin: 48px 0 6px; }
+  footer { border-top: 1px solid var(--line); margin-top: 60px; padding: 24px 0 60px; color: var(--dim); font-size: 13px; }
+</style>
+</head>
+<body>
+<header><div class="wrap bar">
+  <div class="brand">HARTWELL&nbsp;OS</div>
+  <div class="tag">v1.0 · build 2026.11.23 · x86_64 · 1280×800</div>
+</div></header>
+
+<main class="wrap">
+  <h1>One machine. One job.<br><span>Nothing else runs.</span></h1>
+  <p class="lead">
+    Hartwell OS is a single-purpose appliance system for machines that must not drift:
+    signage players, kiosks, controllers, test benches. It boots from an 18 MB image straight
+    into a full 1280×800 interface drawn directly on the framebuffer, in about a second, and
+    there is no shell, no package manager, no remote login and no open port behind that screen.
+    A per-device key turns it on.
+  </p>
+
+  <div class="grid">
+    <div class="shot">
+      <img src="s-overview.png" alt="Hartwell OS appliance screen captured from the running guest">
+      <div class="cap">actual running guest — framebuffer dumped with QEMU screendump, 1280×800</div>
+    </div>
+
+    <div class="card">
+      <div class="price">$149<small>per device, perpetual. Updates included for 12 months.</small></div>
+      <ul>
+        <li>Offline licence key, no phone-home, no activation server</li>
+        <li>One 18 MB ISO, boots on any x86-64 box</li>
+        <li>No shell, no package manager, no remote login</li>
+        <li>Content replaced over one outbound HTTP poll — or not at all</li>
+        <li>Licence and content persist on an <span class="mono">HWO_CFG</span> partition</li>
+      </ul>
+      <a class="btn" href="mailto:business@hartwell-labs.pl?subject=Hartwell%20OS%20licence%20request">Request a licence key</a>
+      <a class="btn ghost" href="#run">Boot the image yourself first</a>
+    </div>
+  </div>
+
+  <div class="cols">
+    <div class="col">
+      <h3>Boots to the job</h3>
+      <p>1.06 s from kernel start to PID 1, measured under QEMU/KVM on this machine. 12 s under
+      pure emulation. No boot menu, no login, no desktop.</p>
+    </div>
+    <div class="col">
+      <h3>Provable</h3>
+      <p>Every screen on this page is a framebuffer dump from a running guest, taken with the
+      QEMU monitor — not a mockup, not a design render.</p>
+    </div>
+    <div class="col">
+      <h3>Licensed per device</h3>
+      <p>The device id comes from its DMI UUID; the key is checked by arithmetic on the unit.
+      A key file copied to another machine is rejected. No server to go down.</p>
+    </div>
+  </div>
+
+  <h2>How a unit gets licensed</h2>
+  <div class="shot" style="margin:0 0 8px">
+    <img src="s-license.png" alt="Hartwell OS licence page showing device id, key and binding">
+    <div class="cap">licensed unit — the licence page reads back what the machine verified</div>
+  </div>
+  <div class="two">
+    <div>
+      <p>An unlicensed unit boots into an activation screen showing its device id. There is no
+      way past it: no shell, no network tools, no package manager in the image.</p>
+      <p>You send the id; you get back <span class="mono">HWO-YYYY-XXXX</span>. Type it on the
+      unit, or bake it into the image. The key is checked by arithmetic against that machine's
+      DMI UUID, so it does not open any other box.</p>
+      <pre><span style="color:var(--dim)"># vendor side</span>
+./tools/keygen.py --uuid 9d2f7c1e-8b4a-4c61-9f2d-3a5b6c7d8e9f
+device=HWO-3DD5-B123
+key=HWO-2026-V8NS
+
+<span style="color:var(--dim)"># on the image: /etc/hartwell/license</span>
+key=HWO-2026-V8NS
+device=HWO-3DD5-B123</pre>
+    </div>
+    <div class="shot">
+      <img src="s-activate.png" alt="Hartwell OS unlicensed unit showing the activation screen and device id">
+      <div class="cap">unlicensed unit — activation screen, typed in place on the device</div>
+    </div>
+  </div>
+
+  <h2 id="run">Run it in a minute</h2>
+  <p style="color:var(--dim);margin:0 0 14px">Stock QEMU is enough. Nothing is installed on the host.</p>
+  <pre><span style="color:var(--dim)"># boot the ISO (BIOS/El Torito)</span>
+qemu-system-x86_64 -cdrom hartwell-os-1.0.iso -m 256 -uuid 9d2f7c1e-8b4a-4c61-9f2d-3a5b6c7d8e9f
+
+<span style="color:var(--dim)"># rebuild it from source, licence baked in</span>
+HWO_KEY=HWO-2026-V8NS HWO_DEVICE=HWO-3DD5-B123 ./build.sh
+
+<span style="color:var(--dim)"># and a bootable disk image with the persistent state partition</span>
+./tools/mkdisk.sh
+sudo dd if=dist/hartwell-os-1.0-usb.img of=/dev/sdX bs=4M &amp;&amp; sync</pre>
+
+  <table>
+    <tr><th>SPEC</th><th>VALUE</th></tr>
+    <tr><td>Kernel</td><td>Linux 6.12.118 LTS, x86_64</td></tr>
+    <tr><td>Userspace</td><td>Alpine 3.22 minirootfs, busybox only (~6 MB unpacked)</td></tr>
+    <tr><td>Appliance runtime</td><td>1.2 MB static binary, no libc on target</td></tr>
+    <tr><td>Image</td><td>25 MB bootable ISO (BIOS + UEFI), initramfs 5.4 MB gzip</td></tr>
+    <tr><td>Boot time</td><td>1.06 s to PID 1 (QEMU/KVM) · 12 s pure emulation</td></tr>
+    <tr><td>Display</td><td>1280×800 framebuffer, 32 bpp, drawn by the runtime itself (DRM: bochs / virtio-gpu / simplefb)</td></tr>
+    <tr><td>Interface</td><td>3 screens — Overview, System, Licence; keyboard only, no mouse</td></tr>
+    <tr><td>Input</td><td>PS/2 or **USB keyboard+mouse** via evdev, works with no VT session</td></tr>
+    <tr><td>Media</td><td>PNG sequence decoder — own inflate, no libpng; FPS 1–60, default 10; poster.png still</td></tr>
+    <tr><td>Secure Boot</td><td>optional with OVMF; key set in tools/secureboot.sh; db.cer + *.auth on disk</td></tr>
+    <tr><td>Text</td><td>bitmap atlases generated from Liberation Sans / Bold / Mono</td></tr>
+    <tr><td>Session</td><td>no shell, no package manager, no remote login, no listening socket</td></tr>
+    <tr><td>Failure policy</td><td>UI crash ×5 → automatic reboot</td></tr>
+    <tr><td>Licensing</td><td>offline, HWO-YYYY-XXXX, bound to DMI UUID</td></tr>
+    <tr><td>Fleet agent</td><td>outbound HTTP poll every 30 s: content pull + heartbeat</td></tr>
+    <tr><td>RAM</td><td>128 MB floor; tested in 256 and 512 MB</td></tr>
+    <tr><td>State</td><td><span class="mono">HWO_CFG</span> VFAT partition: licence + content survive reboot</td></tr>
+    <tr><td>Installer</td><td>one disk image (BIOS + UEFI loaders, two partitions), written with <span class="mono">dd</span></td></tr>
+  </table>
+
+  <div class="warn">
+    <strong>Status, honestly:</strong> v1.0 is a working appliance image — it boots from BIOS ISO
+    or from its own disk image (BIOS or UEFI firmware) into a real 1280×800 interface, enforces a per-device licence
+    typed in on the unit, keeps that licence and the screen content on an <span class="mono">HWO_CFG</span>
+    partition across reboots, and supervises the runtime as PID 1. Real limits, stated until they
+    change: the EFI loader is unsigned by default, so Secure Boot has to be off (can be enabled
+    with `tools/secureboot.sh`); no browser or video layer — the screen is a rendered interface,
+    not a web page. **Mouse is supported** via USB (evdev tablet/usb-hid); keyboard only without it.
+  </div>
+</main>
+
+<footer><div class="wrap">
+  Hartwell Labs · business@hartwell-labs.pl · hartwell-labs.pl — image built and tested on 23 Nov 2026.
+</div></footer>
+</body>
+</html>

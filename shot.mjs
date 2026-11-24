@@ -1,0 +1,11 @@
+import { chromium } from 'playwright';
+const b = await chromium.launch();
+const p = await b.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2 });
+await p.goto('file://' + process.cwd() + '/index.html');
+await p.screenshot({ path: 'page.png', fullPage: true });
+const title = await p.title();
+const price = await p.locator('.price').first().innerText();
+const imgOk = await p.locator('.shot img').first().evaluate(i => i.naturalWidth > 0);
+const imgs = await p.locator('.shot img').evaluateAll(a => a.map(i => ({src: i.getAttribute('src'), w: i.naturalWidth})));
+console.log(JSON.stringify({ title, price, imgOk, imgs }));
+await b.close();

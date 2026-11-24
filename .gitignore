@@ -1,0 +1,20 @@
+# Build output — reproducible with ./build.sh, never committed
+build/
+dist/
+*.iso
+*.img
+*.img.zst
+
+# Cached Alpine base + kernel pulled by the build (see README)
+buildroot/
+
+# Vendor signing material: Secure Boot PK/KEK/db keys and the licence seed.
+# The seed can mint valid licence keys, so it must never be published.
+keys/
+
+# Tooling caches
+node_modules/
+__pycache__/
+.wrangler/
+SALES.md
+shots/

@@ -1,0 +1,6 @@
+Station 04 - Line A
+Output | 1 240 units/h
+Shift | A  -  06:00-14:00
+Operator | station 2
+Maintenance | next window 18:00
+Status | running - no faults
