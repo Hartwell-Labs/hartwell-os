@@ -23,6 +23,7 @@
 #include <linux/kd.h>
 
 #include "hwo.h"
+#include "errors.h"
 #include "monocypher.h"
 
 /* Vendor EdDSA public key, injected by build.sh from keys/hwo-lic.pub. When a
@@ -152,18 +153,28 @@ static int licensed(char *key_out, size_t key_n)
 
     char mine[32];
     device_id(mine);
-    if (dev[0] && strcmp(dev, mine) != 0) return 0;
+    static int noted;                 /* one line per reason per process */
+    if (dev[0] && strcmp(dev, mine) != 0) {
+        if (noted != 1) { noted = 1; hwo_note('E', "E2002", "licence is for %s, this unit is %s", dev, mine); }
+        return 0;
+    }
 
     /* signed licence: authoritative, unforgeable without the vendor seed */
     if (sig[0]) {
-        if (!licence_sig_ok(sig, mine)) return 0;
+        if (!licence_sig_ok(sig, mine)) {
+            if (noted != 2) { noted = 2; hwo_note('E', "E2002", "signature does not verify for %s", mine); }
+            return 0;
+        }
         if (key_out) snprintf(key_out, key_n, "signed");
         return 1;
     }
 
     /* typed serial key: offline convenience, bound to this unit's id */
     if (!key[0]) return 0;
-    if (!key_ok(key, mine)) return 0;
+    if (!key_ok(key, mine)) {
+        if (noted != 3) { noted = 3; hwo_note('E', "E2003", "key %s rejected for %s", key, mine); }
+        return 0;
+    }
     if (key_out) snprintf(key_out, key_n, "%s", key);
     return 1;
 }
@@ -400,8 +411,25 @@ static int dump_vcsa(const char *path)
 int main(int argc, char **argv)
 {
     if (argc < 2) {
-        fprintf(stderr, "usage: hwo id|license|ui|vcsa FILE\n");
+        fprintf(stderr, "usage: hwo id|license|ui|errs|err CODE message|fbprobe|vcsa FILE\n");
         return 2;
+    }
+    if (!strcmp(argv[1], "errs")) {
+        hwo_errs_print(stdout);
+        return 0;
+    }
+    if (!strcmp(argv[1], "err") && argc > 3) {
+        char msg[160] = "";
+        for (int i = 3; i < argc; i++) {
+            size_t l = strlen(msg);
+            snprintf(msg + l, sizeof msg - l, "%s%s", l ? " " : "", argv[i]);
+        }
+        char sev = 'E';
+        if (!hwo_errs_known(argv[2])) sev = 'E';
+        else if (argv[2][0] == 'F') sev = 'F';
+        else if (argv[2][0] == 'W') sev = 'W';
+        hwo_note(sev, argv[2], "%s", msg);
+        return 0;
     }
     if (!strcmp(argv[1], "id")) {
         char d[32];

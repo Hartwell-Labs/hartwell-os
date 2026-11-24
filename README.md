@@ -21,6 +21,8 @@ software emulation (TCG). No bare-metal measurement yet.
 | UI | 4 screens: Overview, System, Licence, Media; **keyboard + mouse** navigation (1/2/3/4 or F1–F4) |
 | Init | `/init` as PID 1, mounts proc/sys/devtmpfs, supervises the UI |
 | Crash policy | 5 UI exits → automatic reboot |
+| Errors | every failure has a stable code (`F`/`E`/`W` + 4 digits), echoed to serial and `/run/hwo.err`, counted in a **System** screen chip (amber `WARN`, red `ERR`); the full book is `docs/errors.md` |
+| Rescue | kernel flag `hwo.rescue=1` or the **Rescue** entry in the boot menu → no UI, no agent, `/bin/sh` on the console with `hwo errs` (log + the fix for each code) |
 | Licence | offline, bound to the device: **Ed25519-signed** licence file verified with an embedded public key (unforgeable, non-transferable); `HWO-YYYY-XXXX` stays as a demo serial |
 | State | `HWO_CFG` VFAT partition: licence + content survive reboot |
 | Fleet agent | optional, outbound only; **DHCP + route + resolv.conf** are brought up at boot, endpoint from `/etc/hartwell/agent.conf` or `hwo.url=`, polls every 30 s |
@@ -31,7 +33,7 @@ software emulation (TCG). No bare-metal measurement yet.
 
 `dist/` ships unlicensed: run `./build.sh` with `HWO_KEY`/`HWO_DEVICE` to bake in a licence.
 
-`hwo` modes: `id`, `license`, `ui`, `fbprobe` (draws a test pattern, exits), `vcsa FILE` (text-console dump, still used by the proof image).
+`hwo` modes: `id`, `license`, `ui`, `fbprobe` (draws a test pattern, exits), `vcsa FILE` (text-console dump, still used by the proof image), `errs` (print the log with fixes), `err CODE msg` (write one event, used by the init scripts).
 
 ## Build
 
@@ -243,6 +245,8 @@ docker run --rm -v \"$PWD/dist:/d\" alpine:latest sh -c \\
 ```
 src/hwo.c        appliance runtime (id / license / ui / fbprobe / vcsa)
 src/hwo.h        runtime <-> UI interface
+src/errors.c/.h  error codes, /run/hwo.err, serial echo, `hwo errs`
+docs/errors.md   the error book: every code, symptom → fix → verify
 src/fbui.c       the whole graphical interface: layout, input, present()
 src/font.h       generated bitmap atlases (393 KB)
 src/init.sh      PID 1: mount, load DRM modules, supervise the UI

@@ -26,7 +26,7 @@ fi
 gcc -O2 -o build/hwo-lic tools/hwo-lic.c src/monocypher.c
 LIC_PUB=$(cat keys/hwo-lic.pub)
 gcc -static -O2 -Wall -Wextra -DHWO_LIC_PUB_HEX='"'"$LIC_PUB"'"' \
-    -o "$ROOT/hwo" src/hwo.c src/fbui.c src/png.c src/monocypher.c
+    -o "$ROOT/hwo" src/hwo.c src/fbui.c src/png.c src/errors.c src/monocypher.c
 # display (DRM), input (evdev keyboard + USB pointer) and storage (VFAT state
 # partition, USB/SATA/virtio disks)
 python3 tools/stage_modules.py "$ROOT" \
@@ -89,12 +89,19 @@ cp build/initrd   build/iso/boot/initrd
 cat > build/iso/isolinux/isolinux.cfg <<'CFG'
 DEFAULT hartwell
 TIMEOUT 20
-PROMPT 0
+PROMPT 1
 
 LABEL hartwell
   KERNEL /boot/vmlinuz
   INITRD /boot/initrd
   APPEND console=tty0 quiet rdinit=/init video=1280x800
+
+# Physical access only: drops to /bin/sh, prints the error log, starts no UI
+# and no agent. See docs/errors.md, "Getting a shell".
+LABEL rescue
+  KERNEL /boot/vmlinuz
+  INITRD /boot/initrd
+  APPEND console=tty0 rdinit=/init video=1280x800 hwo.rescue=1
 CFG
 
 cat > build/iso/isolinux/proof.cfg <<'CFG'
@@ -117,11 +124,16 @@ docker run --rm -v "$PWD/build/iso:/iso" -v "$PWD/dist:/out" -v "$PWD/keys:/keys
   # UEFI: El Torito FAT image holding a GRUB EFI binary. GRUB reads the ISO9660
   # filesystem, so the kernel and initrd stay only once, at /boot in the ISO.
   cat > /tmp/grub.cfg <<CFG
-set timeout=1
+set timeout=3
 search --no-floppy --set=root --file /boot/initrd
-linux /boot/vmlinuz console=tty0 quiet rdinit=/init video=1280x800
-initrd /boot/initrd
-boot
+menuentry "Hartwell OS" {
+  linux /boot/vmlinuz console=tty0 quiet rdinit=/init video=1280x800
+  initrd /boot/initrd
+}
+menuentry "Rescue (shell, no UI)" {
+  linux /boot/vmlinuz console=tty0 rdinit=/init video=1280x800 hwo.rescue=1
+  initrd /boot/initrd
+}
 CFG
   grub-mkstandalone -O x86_64-efi -o /tmp/grub.efi \
     --modules="part_gpt part_msdos fat iso9660 normal linux echo search search_fs_file" \

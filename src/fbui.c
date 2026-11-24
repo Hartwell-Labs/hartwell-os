@@ -30,6 +30,7 @@
 
 #include "font.h"
 #include "hwo.h"
+#include "errors.h"
 #include "png.h"
 
 /* ---------- palette ---------- */
@@ -280,6 +281,7 @@ static void load_content(void)
     content.n = 0;
     content.title[0] = 0;
     if (hwo_read("/etc/hartwell/content.txt", raw, sizeof raw) != 0) {
+        hwo_note('W', "W3001", "/etc/hartwell/content.txt missing; using built-in rows");
         snprintf(content.title, sizeof content.title, "No content configured");
         return;
     }
@@ -482,6 +484,20 @@ static void draw_system(void)
     text(&fb_h1, cx + 36, cy + 30, TEXT, "System");
     chip(cx + cw - 208, cy + 34, is_licensed ? "RUNNING" : "LOCKED",
          is_licensed ? GREEN : RED);
+
+    /* The interface should say when it is running degraded, not only the log:
+       one chip with the count, next to the state chip. */
+    int errs = 0, warns = 0;
+    hwo_errs_split(&errs, &warns);
+    if (errs || warns) {
+        char lbl[24];
+        if (errs)
+            snprintf(lbl, sizeof lbl, "%d ERR%s", errs, errs == 1 ? "" : "S");
+        else
+            snprintf(lbl, sizeof lbl, "%d WARN%s", warns, warns == 1 ? "" : "S");
+        int w = text_w(&fb_bold, lbl) + 52;
+        chip(cx + cw - 208 - 10 - w, cy + 34, lbl, errs ? RED : AMBER);
+    }
 
     struct utsname u;
     uname(&u);
@@ -1087,11 +1103,12 @@ static void key_press(const char *buf, int n)
 int fbui_run(void)
 {
     fb_fd = open("/dev/fb0", O_RDWR);
-    if (fb_fd < 0) return -1;
+    if (fb_fd < 0) { hwo_note('F', "F1001", "cannot open /dev/fb0"); return -1; }
 
     struct fb_var_screeninfo vi;
     struct fb_fix_screeninfo fi;
     if (ioctl(fb_fd, FBIOGET_VSCREENINFO, &vi) != 0 || ioctl(fb_fd, FBIOGET_FSCREENINFO, &fi) != 0) {
+        hwo_note('F', "F1001", "framebuffer reports no usable mode");
         close(fb_fd);
         return -1;
     }
@@ -1099,7 +1116,11 @@ int fbui_run(void)
     H = (int)vi.yres;
     stride = (int)fi.line_length;
     bytespp = (int)(vi.bits_per_pixel / 8);
-    if (bytespp < 2) { close(fb_fd); return -1; }
+    if (bytespp < 2) {
+        hwo_note('F', "F1002", "%d bpp is not supported", vi.bits_per_pixel);
+        close(fb_fd);
+        return -1;
+    }
 
     fb = mmap(NULL, (size_t)stride * H, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
     if (fb == MAP_FAILED) { close(fb_fd); return -1; }

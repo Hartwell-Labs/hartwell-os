@@ -24,6 +24,7 @@ if [ -e /dev/fb0 ]; then
     echo "hartwell-os: framebuffer /dev/fb0 $(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null) $(cat /sys/class/graphics/fb0/bits_per_pixel 2>/dev/null)bpp"
 else
     echo "hartwell-os: no framebuffer, falling back to text console"
+    /hwo err F1001 no /dev/fb0 after modprobe
     sed "s/^/hartwell-os: modprobe: /" /run/modprobe.log 2>/dev/null | head -12
 fi
 
@@ -52,6 +53,7 @@ for d in /dev/vda /dev/vda[0-9]* /dev/vdb /dev/vdb[0-9]* \
         break
     fi
     echo "mount $d failed" >> /run/state.log
+    /hwo err E4002 cannot mount $d read-write
 done
 if [ -n "$state" ]; then
     echo "hartwell-os: state partition $state at /state"
@@ -59,6 +61,7 @@ if [ -n "$state" ]; then
     [ -f /state/content.txt ] && cp /state/content.txt /etc/hartwell/content.txt
 else
     echo "hartwell-os: no HWO_CFG partition, licence and content live in RAM"
+    /hwo err W4001 no HWO_CFG partition
 fi
 
 # networking: outbound only. Bring up every NIC, take a DHCP lease, and set the
@@ -103,9 +106,27 @@ done
 echo hartwell-os > /proc/sys/kernel/hostname 2>/dev/null
 echo 0 > /proc/sys/kernel/sysrq 2>/dev/null
 hwclock -s 2>/dev/null
+year=$(date +%Y 2>/dev/null || echo 1970)
+[ "$year" -lt 2020 ] 2>/dev/null && /hwo err W7001 clock reads $year
 
 echo "hartwell-os: boot $(/hwo id) $(/hwo license >/dev/null 2>&1 && echo licensed || echo unlicensed)"
 echo "hartwell-os: init at $(cut -d' ' -f1 /proc/uptime)s after kernel start"
+
+# rescue mode: a physical flag on the kernel command line, and nothing else.
+# The shipped unit has no shell; this is the only door, and it needs the boot
+# menu, i.e. someone standing at the machine.
+if grep -q 'hwo.rescue=1' /proc/cmdline 2>/dev/null; then
+    export PATH="/:/bin:/sbin:/usr/bin:/usr/sbin"
+    echo "hartwell-os: RESCUE MODE - shell on this console, UI not started"
+    echo "hartwell-os: type 'hwo errs' for the error log, 'exit' then reboot to leave"
+    /hwo errs 2>/dev/null
+    # cttyhack is not in every busybox build; /dev/console is the same tty the
+    # kernel is printing to, so the shell inherits it either way.
+    if [ -x /bin/cttyhack ]; then
+        exec setsid cttyhack sh -i
+    fi
+    exec setsid sh -i </dev/console >/dev/console 2>&1
+fi
 
 if [ -x /agent.sh ] && /hwo license >/dev/null 2>&1; then
     /agent.sh &
@@ -123,8 +144,10 @@ while :; do
     /hwo ui
     crashes=$((crashes + 1))
     echo "hartwell-os: ui exited ($crashes)"
+    /hwo err E1003 ui exited attempt $crashes
     if [ "$crashes" -ge 5 ]; then
         echo "hartwell-os: crash loop, rebooting"
+        /hwo err F1004 five UI exits, rebooting
         sync
         reboot -f
         sleep 5
