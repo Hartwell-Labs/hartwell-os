@@ -5,14 +5,20 @@ Antialiased coverage (0..255) so the framebuffer UI does not look like blocky
 terminal art. Baseline-aligned cells, ASCII 32..126.
 """
 import os
+import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
+# --scale 2 rasterises the same faces at twice the size for the 2x render
+# (the browser demo, and any panel above 1280x800). Layout code is unchanged.
+SCALE = 2 if "--scale" in sys.argv and "2" in sys.argv else 1
+SUFFIX = "2x" if SCALE == 2 else ""
+
 FACES = [
-    ("fb_body", "/usr/share/fonts/liberation/LiberationSans-Regular.ttf", 19),
-    ("fb_bold", "/usr/share/fonts/liberation/LiberationSans-Bold.ttf", 19),
-    ("fb_h1", "/usr/share/fonts/liberation/LiberationSans-Bold.ttf", 34),
-    ("fb_mono", "/usr/share/fonts/liberation/LiberationMono-Regular.ttf", 19),
+    ("fb_body" + SUFFIX, "/usr/share/fonts/liberation/LiberationSans-Regular.ttf", 19 * SCALE),
+    ("fb_bold" + SUFFIX, "/usr/share/fonts/liberation/LiberationSans-Bold.ttf", 19 * SCALE),
+    ("fb_h1" + SUFFIX, "/usr/share/fonts/liberation/LiberationSans-Bold.ttf", 34 * SCALE),
+    ("fb_mono" + SUFFIX, "/usr/share/fonts/liberation/LiberationMono-Regular.ttf", 19 * SCALE),
 ]
 
 out = [
@@ -52,7 +58,11 @@ for name, path, size in FACES:
     out.append("")
 
 out.append("#endif")
-dest = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src", "font.h")
+dest = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "src",
+    "font2x.h" if SCALE == 2 else "font.h",
+)
 with open(dest, "w") as fh:
     fh.write("\n".join(out) + "\n")
 print(f"{dest}: {os.path.getsize(dest) / 1024:.0f} KB")

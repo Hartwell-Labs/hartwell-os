@@ -268,5 +268,15 @@ for what a licence actually buys.
 
 `web/` holds the browser port of the interface: the same drawing primitives,
 layout arithmetic and glyph bitmaps as `src/fbui.c`, rendered to a canvas. It is
-what runs at <https://hartwell-labs.pl/os/>. Build the font atlas with
-`node web/build-font.mjs > web/font.json` after changing `src/font.h`.
+what runs at <https://hartwell-labs.pl/os/>. The layout stays in 1280×800
+coordinates and every primitive multiplies by `S`, so the frame is rasterised at
+2× (2560×1600) and stays sharp on a HiDPI panel while the 1× build still matches
+the framebuffer pixel for pixel.
+
+Regenerate the atlases after touching `tools/mkfont.py`:
+
+```sh
+python3 tools/mkfont.py            # src/font.h    — 1x, used by the ISO
+python3 tools/mkfont.py --scale 2  # src/font2x.h  — 2x, used by the browser
+node web/build-font.mjs > web/font.json && gzip -9 -c web/font.json > web/font.json.gz
+```
