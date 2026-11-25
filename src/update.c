@@ -15,10 +15,15 @@
  * not strictly newer is refused, so a stolen old bundle cannot roll a unit back
  * onto a known-vulnerable image.
  *
- * Applying writes the payload to the boot partition (LABEL=HWBOOT, mounted at
- * /boot by init) as initrd.new, fsyncs, renames over initrd and only then
- * updates /boot/version.txt. A live ISO has no boot partition, and says so
- * (E9003) instead of pretending to update.
+ * The boot partition (LABEL=HWBOOT, mounted at /boot by init) carries two slots,
+ * /boot/slot-a and /boot/slot-b, each holding an initrd, and /boot/state records
+ * which slot is active, which one it replaced, and how many boot attempts the
+ * new slot still has. An update is written into the *inactive* slot and only then
+ * made active, so the running image is never overwritten. Until the new image
+ * confirms itself (hwo bootconfirm, called by init once the UI has been up for a
+ * while) the attempt counter runs down; when it reaches zero the next boot puts
+ * the previous slot back. A live ISO has no boot partition and says so (E9003)
+ * instead of pretending to update.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -38,6 +43,10 @@
 #define VER_FILE "/etc/hartwell/version.txt"
 #define BOOT_DIR "/boot"
 #define HDR_MAX  2048
+
+/* how many times a freshly installed slot may fail to confirm before the
+ * bootloader is pointed back at the slot it replaced */
+#define SLOT_TRIES 3
 
 static int hex_nib(int c)
 {
@@ -76,12 +85,156 @@ static int ver_num(const char *v)
     return a * 1000000 + b * 1000 + c;
 }
 
+static const char *boot_root(void)
+{
+    const char *b = getenv("HWO_BOOT_DIR");
+    return b ? b : BOOT_DIR;
+}
+
+/* boot slots: a, b, their state file, loader.conf default line */
+struct bootstate {
+    char active[8];
+    char previous[8];
+    int tries;      /* attempts left for active; -1 once confirmed */
+};
+
+static void state_path(char *out, size_t n)
+{
+    snprintf(out, n, "%s/state", boot_root());
+}
+
+static int read_state(struct bootstate *s)
+{
+    snprintf(s->active, sizeof s->active, "a");
+    snprintf(s->previous, sizeof s->previous, "b");
+    s->tries = -1;
+
+    char path[512];
+    state_path(path, sizeof path);
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    char line[128];
+    while (fgets(line, sizeof line, f)) {
+        if (!strncmp(line, "active=", 7)) {
+            char *v = line + 7; v[strcspn(v, "\r\n")] = 0;
+            snprintf(s->active, sizeof s->active, "%.7s", v);
+        } else if (!strncmp(line, "previous=", 9)) {
+            char *v = line + 9; v[strcspn(v, "\r\n")] = 0;
+            snprintf(s->previous, sizeof s->previous, "%.7s", v);
+        } else if (!strncmp(line, "tries=", 6)) {
+            s->tries = atoi(line + 6);
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
+static int write_state(const struct bootstate *s)
+{
+    char path[512], tmp[520];
+    state_path(path, sizeof path);
+    snprintf(tmp, sizeof tmp, "%s.new", path);
+    FILE *f = fopen(tmp, "w");
+    if (!f) return -1;
+    fprintf(f, "active=%s\nprevious=%s\n", s->active, s->previous);
+    if (s->tries >= 0) fprintf(f, "tries=%d\n", s->tries);
+    fflush(f);
+    fsync(fileno(f));
+    fclose(f);
+    if (rename(tmp, path) != 0) { unlink(tmp); return -1; }
+    return 0;
+}
+
+/* Point the boot menu at a slot.
+ *
+ * systemd-boot in these images does not honour `default`: it boots whichever
+ * entry sorts last, which on an unattended unit means the menu decides the
+ * image. So the one live entry, zz-hartwell.conf, is rewritten in place and the
+ * slot it boots is therefore what /boot/state says. aa-rescue.conf sorts first
+ * and is only reachable by hand from the menu.
+ */
+#define ENTRY_REL "loader/entries/zz-hartwell.conf"
+
+static int point_loader_at(const char *slot)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s", boot_root(), ENTRY_REL);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;   /* not a UEFI install, nothing to point */
+    char buf[1024];
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n < 0) return 0;
+    buf[n] = 0;
+
+    char out[1200];
+    size_t o = 0;
+    char *line = buf;
+    while (*line) {
+        char *nl = strchr(line, '\n');
+        size_t len = nl ? (size_t)(nl - line) + 1 : strlen(line);
+        char one[600];
+        if (len >= sizeof one) len = sizeof one - 1;
+        memcpy(one, line, len);
+        one[len] = 0;
+
+        if (!strncmp(one, "initrd", 6)) {
+            o += (size_t)snprintf(out + o, sizeof out - o, "initrd /slot-%s/initrd\n", slot);
+        } else if (!strncmp(one, "options", 7)) {
+            char opts[600];
+            snprintf(opts, sizeof opts, "%s", one + 7);
+            char *p = strstr(opts, "hwo.slot=");
+            if (p) p[9] = slot[0];
+            else {
+                char *e = opts + strcspn(opts, "\r\n");
+                snprintf(e, sizeof opts - (size_t)(e - opts), " hwo.slot=%s", slot);
+            }
+            o += (size_t)snprintf(out + o, sizeof out - o, "options%s\n", opts);
+        } else if (o + len < sizeof out) {
+            memcpy(out + o, one, len);
+            o += len;
+        }
+        if (!nl) break;
+        line = nl + 1;
+    }
+    out[o] = 0;
+
+    char tmp[520];
+    snprintf(tmp, sizeof tmp, "%s.new", path);
+    int ofd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (ofd < 0) return -1;
+    ssize_t w = write(ofd, out, o);
+    fsync(ofd);
+    close(ofd);
+    if (w != (ssize_t)o || rename(tmp, path) != 0) { unlink(tmp); return -1; }
+    return 1;
+}
+
+static int write_version(const char *slot, const char *ver)
+{
+    char path[520], tmp[530];
+    if (slot) snprintf(path, sizeof path, "%s/ver-%s", boot_root(), slot);
+    else      snprintf(path, sizeof path, "%s/version.txt", boot_root());
+    snprintf(tmp, sizeof tmp, "%s.new", path);
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return -1;
+    char line[64];
+    int n = snprintf(line, sizeof line, "%s\n", ver);
+    ssize_t w = write(fd, line, (size_t)n);
+    fsync(fd);
+    close(fd);
+    if (w != n || rename(tmp, path) != 0) { unlink(tmp); return -1; }
+    return 0;
+}
+
 static int installed_version(char *out, size_t n)
 {
-    const char *boot = getenv("HWO_BOOT_DIR");
+    struct bootstate st;
     char path[512];
-    snprintf(path, sizeof path, "%s/version.txt", boot ? boot : BOOT_DIR);
+    read_state(&st);
+    snprintf(path, sizeof path, "%s/ver-%s", boot_root(), st.active);
     int fd = open(path, O_RDONLY);
+    if (fd < 0) snprintf(path, sizeof path, "%s/version.txt", boot_root()), fd = open(path, O_RDONLY);
     if (fd < 0) snprintf(path, sizeof path, "%s", VER_FILE), fd = open(path, O_RDONLY);
     if (fd < 0) { snprintf(out, n, "0.0.0"); return 0; }
     ssize_t r = read(fd, out, n - 1);
@@ -188,16 +341,24 @@ int hwo_update(const char *bundle, int force)
         return 1;
     }
 
-    const char *boot = getenv("HWO_BOOT_DIR");
-    if (!boot) boot = BOOT_DIR;
-    char out[512], tmp[512];
-    snprintf(out, sizeof out, "%s/initrd", boot);
-    snprintf(tmp, sizeof tmp, "%s/initrd.new", boot);
+    struct bootstate st;
+    read_state(&st);
+    /* never touch the running slot: the new image goes to the other one */
+    const char *target = !strcmp(st.active, "a") ? "b" : "a";
+    char out[600], tmp[620], sdir[512];
+    snprintf(sdir, sizeof sdir, "%s/slot-%s", boot_root(), target);
+    if (mkdir(sdir, 0755) != 0 && errno != EEXIST) {
+        close(fd);
+        hwo_note('E', "E9003", "no writable boot partition at %s (%s)", sdir, strerror(errno));
+        return 1;
+    }
+    snprintf(out, sizeof out, "%s/initrd", sdir);
+    snprintf(tmp, sizeof tmp, "%s/initrd.new", sdir);
 
     int ofd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (ofd < 0) {
         close(fd);
-        hwo_note('E', "E9003", "no writable boot partition at %s (%s)", boot, strerror(errno));
+        hwo_note('E', "E9003", "no writable boot partition at %s (%s)", sdir, strerror(errno));
         return 1;
     }
 
@@ -237,21 +398,77 @@ int hwo_update(const char *bundle, int force)
         return 1;
     }
 
-    /* the version marker is written last, so a half-applied update never claims
-     * to be the new version */
-    snprintf(tmp, sizeof tmp, "%s/version.txt.new", boot);
-    int vf = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (vf >= 0) {
-        char line[64];
-        int n = snprintf(line, sizeof line, "%s\n", ver);
-        if (write(vf, line, (size_t)n) != n) { /* best effort, hash already matched */ }
-        fsync(vf);
-        close(vf);
-        snprintf(out, sizeof out, "%s/version.txt", boot);
-        rename(tmp, out);
+    write_version(target, ver);
+    write_version(NULL, ver);
+
+    /* state is written last: it is what makes the new slot bootable, and what
+     * makes the next boot fall back if the new image never confirms itself */
+    char was[8];
+    snprintf(was, sizeof was, "%s", st.active);
+    snprintf(st.previous, sizeof st.previous, "%s", was);
+    snprintf(st.active, sizeof st.active, "%s", target);
+    st.tries = SLOT_TRIES;
+    if (write_state(&st) != 0) {
+        hwo_note('E', "E9003", "cannot record slot state on the boot partition");
+        return 1;
     }
+    point_loader_at(target);
 
     sync();
-    printf("update %s applied, %zu bytes; reboot to run it\n", ver, total);
+    printf("update %s applied, %zu bytes into slot %s; reboot to run it\n"
+           "slot %s is kept as the fallback until the new image confirms\n",
+           ver, total, target, was);
+    return 0;
+}
+
+/* called by init once the UI has been running for a while: the slot works, so
+ * stop counting attempts and keep it */
+int hwo_boot_confirm(void)
+{
+    struct bootstate st;
+    if (read_state(&st) != 0) {
+        puts("no boot state, nothing to confirm");
+        return 0;
+    }
+    if (st.tries < 0) {
+        printf("slot %s already confirmed\n", st.active);
+        return 0;
+    }
+    st.tries = -1;
+    if (write_state(&st) != 0) {
+        hwo_note('E', "E9003", "cannot confirm slot %s: boot partition read-only", st.active);
+        return 1;
+    }
+    sync();
+    printf("slot %s confirmed\n", st.active);
+    return 0;
+}
+
+/* put the slot that was running before the last update back in charge */
+int hwo_boot_rollback(void)
+{
+    struct bootstate st;
+    if (read_state(&st) != 0) {
+        puts("no boot state, nothing to roll back");
+        return 0;
+    }
+    if (!strcmp(st.active, st.previous)) {
+        printf("already running the fallback slot %s\n", st.active);
+        return 0;
+    }
+    char back[8];
+    snprintf(back, sizeof back, "%s", st.previous);
+    snprintf(st.previous, sizeof st.previous, "%s", st.active);
+    snprintf(st.active, sizeof st.active, "%s", back);
+    st.tries = -1;
+    if (write_state(&st) != 0) {
+        hwo_note('E', "E9003", "cannot roll back: boot partition read-only");
+        return 1;
+    }
+    point_loader_at(back);
+    char v[32];
+    installed_version(v, sizeof v);
+    sync();
+    printf("rolled back to slot %s (%s); reboot to run it\n", back, v);
     return 0;
 }

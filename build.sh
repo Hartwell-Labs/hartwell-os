@@ -113,6 +113,7 @@ cp "$VMLINUZ" build/vmlinuz
 
 if [ "$ARCH" = arm64 ]; then
   echo "==> packing bootable ARM64 disk image"
+  printf '%s\n' "$VERSION" > build/ver-a
   docker run --rm -v "$PWD/build:/b" -v "$PWD/$BASE:/base:ro" -v "$PWD/dist:/out" alpine:latest sh -c '
     set -e
     apk add --no-cache mtools dosfstools parted >/dev/null 2>&1
@@ -122,20 +123,35 @@ if [ "$ARCH" = arm64 ]; then
     OFF=$((1024*1024))
     mkfs.vfat -F 16 -n HWOBOOT --offset 2048 $IMG $((79*1024*2)) >/dev/null
     D="$IMG@@$OFF"
-    mmd -i "$D" ::EFI ::EFI/BOOT ::loader ::loader/entries
+    mmd -i "$D" ::EFI ::EFI/BOOT ::loader ::loader/entries ::slot-a ::slot-b
     mcopy -i "$D" /base/systemd-bootaa64.efi ::EFI/BOOT/BOOTAA64.EFI
     mcopy -i "$D" /b/vmlinuz ::vmlinuz
-    mcopy -i "$D" /b/initrd ::initrd
+    # two slots: the shipped image runs from a, an update installs into b and
+    # only becomes the default once it is on disk. Both start on the same
+    # initramfs so a fresh unit still has a fallback.
+    mcopy -i "$D" /b/initrd ::slot-a/initrd
+    mcopy -i "$D" /b/initrd ::slot-b/initrd
+    # one live entry plus rescue. This systemd-boot ignores `default` and boots
+    # the entry that sorts last, so the live entry is zz-hartwell.conf: whichever
+    # way the menu resolves, an unattended unit gets the slot stated in
+    # /boot/state (hwo update rewrites this file, it does not add entries).
     printf "default zz-hartwell\ntimeout 5\n" > /tmp/loader.conf
-    printf "title Hartwell OS\nlinux /vmlinuz\ninitrd /initrd\noptions console=ttyAMA0 console=tty0 quiet rdinit=/init video=1280x800\n" > /tmp/hwo.conf
-    printf "title Rescue (shell, no UI)\nlinux /vmlinuz\ninitrd /initrd\noptions console=ttyAMA0 console=tty0 rdinit=/init video=1280x800 hwo.rescue=1\n" > /tmp/rescue.conf
+    printf "title Hartwell OS\nlinux /vmlinuz\ninitrd /slot-a/initrd\noptions console=ttyAMA0 console=tty0 quiet rdinit=/init video=1280x800 hwo.slot=a\n" > /tmp/hwo.conf
+    # rescue always boots the original slot-a image: the image that has been
+    # running since the unit was installed, never a half-tested update
+    printf "title Rescue (shell, no UI)\nlinux /vmlinuz\ninitrd /slot-a/initrd\noptions console=ttyAMA0 console=tty0 rdinit=/init video=1280x800 hwo.rescue=1\n" > /tmp/rescue.conf
+    printf "active=a\nprevious=b\n" > /tmp/state
     mcopy -i "$D" /tmp/loader.conf ::loader/loader.conf
     mcopy -i "$D" /tmp/hwo.conf ::loader/entries/zz-hartwell.conf
     mcopy -i "$D" /tmp/rescue.conf ::loader/entries/aa-rescue.conf
+    mcopy -i "$D" /tmp/state ::state
+    mcopy -i "$D" /b/ver-a ::ver-a
     cp $IMG /out/hartwell-os-1.0-arm64.img
   '
-  cp build/initrd "$DIST/initrd"
-  cp build/vmlinuz "$DIST/vmlinuz"
+  # arch-suffixed: the x86 build writes dist/initrd and dist/vmlinuz, and a
+  # build of the other arch must not silently replace them
+  cp build/initrd "$DIST/initrd-arm64"
+  cp build/vmlinuz "$DIST/vmlinuz-arm64"
   ( cd "$DIST" && ls | grep -v SHA256SUMS | xargs sha256sum > SHA256SUMS )
   echo
   echo "==> done (arm64)"

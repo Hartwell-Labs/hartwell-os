@@ -68,12 +68,42 @@ fi
 # FAT partition labelled HWBOOT that the unit boots from; a live ISO has none,
 # and hwo update then says so (E9003) instead of pretending to update.
 mkdir -p /boot
+bootmounted=0
 for d in /dev/vda1 /dev/sda1 /dev/nvme0n1p1 /dev/mmcblk0p1; do
     [ -b "$d" ] || continue
     case "$(blkid "$d" 2>/dev/null)" in
-    *'LABEL="HWBOOT"'*) mount -t vfat -o rw,iocharset=utf8,umask=0022 "$d" /boot 2>/dev/null && break ;;
+    *'LABEL="HWBOOT"'*) mount -t vfat -o rw,iocharset=utf8,umask=0022 "$d" /boot 2>/dev/null && bootmounted=1 && break ;;
     esac
 done
+
+# boot slots: the update channel installs into the slot that is not running and
+# flips /boot/state. Until the new image calls "hwo bootconfirm" its attempt
+# counter runs down; the boot that finds it at zero hands the loader back to the
+# slot that was working. This lives here, before the UI, so a crash loop cannot
+# swallow it.
+slot=""
+for a in $(cat /proc/cmdline 2>/dev/null); do case "$a" in hwo.slot=*) slot="${a#hwo.slot=}" ;; esac; done
+if [ -n "$slot" ] && [ -f /boot/state ]; then
+    st_get() { sed -n "s/^$1=//p" /boot/state 2>/dev/null | head -1; }
+    active=$(st_get active); prev=$(st_get previous); tries=$(st_get tries)
+    echo "hartwell-os: boot slot $slot, active ${active:-?}, tries ${tries:-confirmed}"
+    if [ "$active" = "$slot" ] && [ -n "$tries" ]; then
+        if [ "$tries" -le 0 ]; then
+            echo "hartwell-os: slot $slot never confirmed, rolling back to $prev"
+            /hwo err W9001 slot $slot never confirmed, rolling back to $prev
+            /hwo rollback >/dev/null 2>&1
+            sync
+            reboot -f
+            sleep 30
+        else
+            tries=$((tries - 1))
+            printf 'active=%s\nprevious=%s\ntries=%s\n' "$active" "$prev" "$tries" \
+                > /boot/state.new 2>/dev/null && mv /boot/state.new /boot/state 2>/dev/null
+            sync
+            echo "hartwell-os: slot $slot attempt $((3 - tries)) of 3"
+        fi
+    fi
+fi
 
 # networking: outbound only. Bring up every NIC, take a DHCP lease, and set the
 # fleet endpoint so /agent.sh can actually reach it. No inbound listeners.
@@ -144,7 +174,12 @@ fi
 # supervise the appliance; five crashes and the box reboots itself
 crashes=0
 while :; do
-    /hwo ui
+    # run the UI in the background only so the watchdog below can tell whether it
+    # is still alive; the loop still waits for it and still counts every exit
+    /hwo ui &
+    uipid=$!
+    ( sleep 25; kill -0 "$uipid" 2>/dev/null && /hwo bootconfirm >/dev/null 2>&1 ) &
+    wait "$uipid"
     crashes=$((crashes + 1))
     echo "hartwell-os: ui exited ($crashes)"
     /hwo err E1003 ui exited attempt $crashes

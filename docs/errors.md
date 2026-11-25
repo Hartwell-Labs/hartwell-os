@@ -57,6 +57,7 @@ deliberately not reachable over the network.
 | E9002 | error | update is older than the running image (downgrade refused) |
 | E9003 | error | no writable boot partition for the update |
 | E9004 | error | update bundle unreadable, or the write failed |
+| W9001 | warning | the new slot never confirmed itself, the previous image is booted |
 
 ---
 
@@ -235,7 +236,24 @@ the old image (the UI is untouched: a refused update never affects the screen).
 | E9003 | no writable boot partition at `/boot` (live ISO, read-only media) | update a disk install, or boot the unit from media with an `HWBOOT` partition |
 | E9004 | the file has no manifest, or the copy to `/boot` failed | re-copy the bundle and check free space on the boot partition |
 
-**Verify.** After a successful update: `/boot/version.txt` holds the new version,
-`/boot/initrd` is the new payload, and the serial log on the next boot prints
-`hartwell-os: cmdline ...` and `hartwell-os: boot ...` from the new image.
-See `docs/updates.md` for the bundle format and the vendor-side commands.
+**Verify.** After a successful update: `/boot/state` names the new slot and its
+tries, `/boot/slot-<x>/initrd` is the new payload, `/boot/ver-<x>` the new
+version, and the serial log on the next boot prints `hartwell-os: boot slot x`
+followed by `hartwell-os: boot ...`. See `docs/updates.md` for the bundle format
+and the vendor-side commands.
+
+## W9001 — update not confirmed
+
+**Symptom.** The serial log on boot says `slot b never confirmed, rolling back
+to a`, then the unit reboots into the previous image and the UI comes up
+normally.
+
+**Cause.** The update was installed into the inactive slot, but that image never
+reached a live UI long enough to call `hwo bootconfirm` within its three boot
+attempts. Usual reasons: a GPU driver the new image loads differently, a crashed
+UI, or a broken licence file on `/state`.
+
+**Fix.** Nothing on the unit: the rollout is already undone. On the bench, boot
+the image with `hwo.debug=1` to see the module log, or run `hwo rollback` by hand
+to force the fallback before it expires. Details in `docs/updates.md`,
+"Rollback".

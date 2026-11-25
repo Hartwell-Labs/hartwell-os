@@ -33,10 +33,48 @@ hwo update /media/usb/hwo-1.1.0.bundle
 # update 1.1.0 applied, 6575166 bytes; reboot to run it
 ```
 
-The unit writes the payload to the boot partition (`LABEL=HWBOOT`, mounted at
-`/boot` by `/init`) as `initrd.new`, `fsync`s, renames it over `initrd`, and only
-then updates `/boot/version.txt`. A half-applied update therefore never claims to
-be the new version.
+The unit writes the payload into the **inactive slot** of the boot partition
+(`LABEL=HWBOOT`, mounted at `/boot` by `/init`): `/boot/slot-a` or `/boot/slot-b`,
+whichever is not running. It writes `initrd.new` in that slot, `fsync`s, renames
+it over the slot's `initrd`, records `/boot/ver-<slot>`, and only then edits
+`/boot/state` — the file that makes the new slot the one the bootloader loads.
+The running slot is never opened for writing, so a failed update cannot damage
+the image the unit is using.
+
+```
+/boot/state          active=b
+                     previous=a
+                     tries=3
+/boot/slot-a/initrd  the image that has been running
+/boot/slot-b/initrd  the image just installed
+/boot/ver-a          1.0.0
+/boot/ver-b          1.1.0
+```
+
+## Rollback
+
+`tries` is the number of boots the new slot gets to prove itself. Each boot of
+that slot decrements it in `/init`, before the UI starts, so a crash loop cannot
+run past it. When the UI has been up for 25 seconds, `hwo bootconfirm` deletes
+the counter and the slot is permanent. A boot that finds `tries=0` points the
+boot entry back at the previous slot, reboots, and logs **W9001**.
+
+The boot menu is one live entry, `loader/entries/zz-hartwell.conf`, plus
+`aa-rescue.conf`. `hwo update` and `hwo rollback` rewrite the live entry's
+`initrd` and `hwo.slot=` rather than editing `default` in `loader.conf`: the
+`systemd-boot` shipped in these images ignores `default` and boots the entry
+that sorts last, so a second slot entry would win the menu on its own. One
+entry, rewritten in place, keeps the menu and `/boot/state` in agreement.
+
+Manual control, for a technician who sees a bad image on screen:
+
+```sh
+hwo rollback      # point the loader back at the previous slot, then reboot
+hwo bootconfirm   # keep the running slot for good, without waiting
+```
+
+The **Rescue** boot entry always uses slot a — the image installed with the
+unit — so rescue stays available even after slot b has been updated twice.
 
 Reach a shell on a running appliance through the boot menu entry **Rescue**
 (kernel flag `hwo.rescue=1`), or run the update at boot from a USB stick.
@@ -49,6 +87,7 @@ Reach a shell on a running appliance through the boot menu entry **Rescue**
 | **E9002** | the bundle version is not strictly newer than `/etc/hartwell/version.txt` | refused, so an old vulnerable image cannot be replayed |
 | **E9003** | no writable boot partition (live ISO, read-only media) | refused; the unit keeps running and says so |
 | **E9004** | manifest missing, unreadable, or the write failed | nothing applied |
+| **W9001** | the new slot never confirmed within its three boots | the previous slot is booted again; nothing to do at the unit |
 
 `--force` bypasses the version check (E9002) but never the signature: a bundle
 signed with another key, or a payload that does not match its hash, is always
@@ -57,7 +96,12 @@ rejected.
 ## Tested
 
 ```
-valid 1.1.0 over installed 1.0.0   -> applied, /boot/initrd byte-identical, marker 1.1.0
+valid 1.1.0 over installed 1.0.0   -> applied into slot b, payload byte-identical, ver-b=1.1.0
+                                     state active=b previous=a tries=3,
+                                     entry now initrd /slot-b/initrd + hwo.slot=b,
+                                     slot a untouched
+hwo bootconfirm                     -> tries line removed, slot b permanent
+hwo rollback                        -> state active=a, entry back to slot a, version reports 1.0.0
 same bundle again                  -> E9002
 payload byte flipped               -> E9001, no file left behind
 bundle signed with another key     -> E9001
@@ -70,7 +114,12 @@ no /boot (read-only image)         -> E9003
   image (and, on ARM, a new `vmlinuz` on the ESP). This is deliberate: the kernel
   is what boots, and swapping it without a second boot slot to fall back to is
   how appliances get bricked.
-- There is no A/B slot yet, and no automatic rollback: a bundle that boots but
-  misbehaves is reverted by applying the older signed bundle with `--force`.
+- **A/B covers the initramfs, not the kernel.** The kernel and the bootloader
+  live outside the slots, so a kernel change still needs a new image. A kernel
+  that panics before `/init` runs is not rolled back automatically; the unit
+  needs the Rescue entry or a technician. Making the kernel a slot payload needs
+  a stage-0 loader and is a separate piece of work.
+- Confirmation is time-based: 25 seconds of a live UI process. An image that
+  starts, looks fine for half a minute and then fails will be confirmed and kept.
 - Delivery is manual (USB stick, or a script on the fleet server). There is no
   push channel inside the OS.

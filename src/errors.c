@@ -39,6 +39,7 @@ static const ErrInfo ERRORS[] = {
     { "W6001", 'W', "media directory unreadable",  "frames are there but the directory cannot be listed" },
     { "W6002", 'W', "media frame decode failed",   "one PNG is corrupt; playback skips it" },
     { "W7001", 'W', "clock not set",               "no RTC and no network time; the header clock is wrong" },
+    { "W9001", 'W', "update not confirmed",        "the new slot never came up cleanly; the previous image is booted" },
     { "E9001", 'E', "update signature invalid",    "the bundle was not signed by the vendor key" },
     { "E9002", 'E', "update older than running",   "downgrade refused; pass force only with a signed bundle" },
     { "E9003", 'E', "no writable boot partition",  "the unit booted from read-only media; use a disk install or a USB stick with HWBOOT" },

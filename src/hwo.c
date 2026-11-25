@@ -423,13 +423,16 @@ static int dump_vcsa(const char *path)
 }
 
 int hwo_update(const char *bundle, int force);   /* src/update.c */
+int hwo_boot_confirm(void);                      /* src/update.c */
+int hwo_boot_rollback(void);                     /* src/update.c */
 
 /* ---------- main ---------- */
 
 int main(int argc, char **argv)
 {
     if (argc < 2) {
-        fprintf(stderr, "usage: hwo id|license|ui|errs|err CODE message|fbprobe|vcsa FILE|update BUNDLE\n");
+        fprintf(stderr, "usage: hwo id|license|ui|errs|err CODE message|fbprobe|vcsa FILE"
+                        "|update BUNDLE [--force]|bootconfirm|rollback\n");
         return 2;
     }
     if (!strcmp(argv[1], "errs")) {
@@ -457,6 +460,8 @@ int main(int argc, char **argv)
         int force = (argc > 3 && !strcmp(argv[3], "--force"));
         return hwo_update(argv[2], force);
     }
+    if (!strcmp(argv[1], "bootconfirm")) return hwo_boot_confirm();
+    if (!strcmp(argv[1], "rollback"))    return hwo_boot_rollback();
     if (!strcmp(argv[1], "id")) {
         char d[32];
         device_id(d);
