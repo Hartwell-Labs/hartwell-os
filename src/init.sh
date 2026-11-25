@@ -64,6 +64,17 @@ else
     /hwo err W4001 no HWO_CFG partition
 fi
 
+# boot partition: the update channel writes the next initramfs here. It is the
+# FAT partition labelled HWBOOT that the unit boots from; a live ISO has none,
+# and hwo update then says so (E9003) instead of pretending to update.
+mkdir -p /boot
+for d in /dev/vda1 /dev/sda1 /dev/nvme0n1p1 /dev/mmcblk0p1; do
+    [ -b "$d" ] || continue
+    case "$(blkid "$d" 2>/dev/null)" in
+    *'LABEL="HWBOOT"'*) mount -t vfat -o rw,iocharset=utf8,umask=0022 "$d" /boot 2>/dev/null && break ;;
+    esac
+done
+
 # networking: outbound only. Bring up every NIC, take a DHCP lease, and set the
 # fleet endpoint so /agent.sh can actually reach it. No inbound listeners.
 cat > /etc/resolv.conf <<'RESOLV'
@@ -109,6 +120,7 @@ hwclock -s 2>/dev/null
 year=$(date +%Y 2>/dev/null || echo 1970)
 [ "$year" -lt 2020 ] 2>/dev/null && /hwo err W7001 clock reads $year
 
+echo "hartwell-os: cmdline $(cat /proc/cmdline 2>/dev/null)"
 echo "hartwell-os: boot $(/hwo id) $(/hwo license >/dev/null 2>&1 && echo licensed || echo unlicensed)"
 echo "hartwell-os: init at $(cut -d' ' -f1 /proc/uptime)s after kernel start"
 

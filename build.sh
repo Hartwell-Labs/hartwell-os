@@ -6,17 +6,30 @@ cd "$(dirname "$0")"
 
 ROOT=build/rootfs
 DIST=dist
-VMLINUZ=${VMLINUZ:-buildroot/vmlinuz-lts}
+
+# x86_64 (default) or arm64: same rootfs and UI, a different kernel, module
+# tree and boot chain. The ARM build has no BIOS and no ISO: the deliverable is
+# a GPT disk image with one EFI system partition holding systemd-boot.
+ARCH=${ARCH:-amd64}
+VERSION=1.0.0
+case "$ARCH" in
+  amd64) BASE=buildroot ;;
+  arm64|aarch64) ARCH=arm64; BASE=buildroot-arm64 ;;
+  *) echo "unknown ARCH '$ARCH' (use amd64 or arm64)" >&2; exit 1 ;;
+esac
+VMLINUZ=${VMLINUZ:-$BASE/vmlinuz-lts}
+export HWO_BUILDROOT=$BASE
 
 # the Alpine base is not committed: a clean checkout fetches it, pinned
-if [ ! -f buildroot/alpine-minirootfs.tar.gz ] || [ ! -f buildroot/vmlinuz-lts ]; then
-  sh tools/fetch-base.sh
+if [ ! -f "$BASE/alpine-minirootfs.tar.gz" ] || [ ! -f "$BASE/vmlinuz-lts" ]; then
+  if [ "$ARCH" = arm64 ]; then sh tools/fetch-base.sh --arch arm64
+  else                          sh tools/fetch-base.sh; fi
 fi
 
 echo "==> staging rootfs"
-rm -rf build "$DIST"
+rm -rf build
 mkdir -p "$ROOT" "$DIST"
-tar xzf buildroot/alpine-minirootfs.tar.gz -C "$ROOT"
+tar xzf "$BASE/alpine-minirootfs.tar.gz" -C "$ROOT"
 mkdir -p "$ROOT"/{proc,sys,dev,run,tmp,etc/hartwell}
 rm -rf "$ROOT"/var/cache "$ROOT"/usr/share/man "$ROOT"/usr/share/doc "$ROOT"/opt "$ROOT"/media "$ROOT"/mnt
 
@@ -31,16 +44,38 @@ if [ ! -f keys/hwo-lic.pub ]; then
 fi
 gcc -O2 -o build/hwo-lic tools/hwo-lic.c src/monocypher.c
 LIC_PUB=$(cat keys/hwo-lic.pub)
+if [ "$ARCH" = arm64 ]; then
+  # the runtime must be an aarch64 binary; build it in an emulated arm64 image
+  # so the build host needs no cross toolchain
+  docker run --rm --platform linux/arm64 \
+      -v "$PWD/src:/src:ro" -v "$PWD/build:/out" -e LIC_PUB="$LIC_PUB" alpine:latest sh -c '
+    set -e
+    apk add --no-cache gcc musl-dev linux-headers >/dev/null 2>&1
+    gcc -static -O2 -Wall -Wextra -DHWO_LIC_PUB_HEX="\"$LIC_PUB\"" -o /out/hwo \
+        /src/hwo.c /src/fbui.c /src/png.c /src/errors.c /src/update.c /src/monocypher.c
+  '
+  cp build/hwo "$ROOT/hwo"
+else
 gcc -static -O2 -Wall -Wextra -DHWO_LIC_PUB_HEX='"'"$LIC_PUB"'"' \
-    -o "$ROOT/hwo" src/hwo.c src/fbui.c src/png.c src/errors.c src/monocypher.c
+    -o "$ROOT/hwo" src/hwo.c src/fbui.c src/png.c src/errors.c src/update.c src/monocypher.c
+fi
 # display (DRM), input (evdev keyboard + USB pointer) and storage (VFAT state
 # partition, USB/SATA/virtio disks)
-python3 tools/stage_modules.py "$ROOT" \
-    bochs virtio_gpu evdev psmouse usbhid \
-    virtio_net e1000 e1000e r8169 \
-    fat vfat nls_cp437 nls_iso8859_1 nls_ascii nls_utf8 \
-    virtio_blk virtio_pci sd_mod sr_mod usb_storage uas xhci_hcd xhci_pci ehci_hcd ehci_pci uhci_hcd \
-    ahci ata_piix ata_generic pata_acpi
+if [ "$ARCH" = arm64 ]; then
+  # QEMU virt and boards with a simple framebuffer: no bochs, no PS/2, no PATA
+  HWO_ALLOW_MISSING=1 python3 tools/stage_modules.py "$ROOT" \
+      virtio_gpu simpledrm evdev usbhid xhci_hcd xhci_pci \
+      virtio_net virtio_blk virtio_pci virtio_mmio \
+      fat vfat nls_cp437 nls_iso8859_1 nls_ascii nls_utf8 \
+      sd_mod sr_mod usb_storage uas
+else
+  python3 tools/stage_modules.py "$ROOT" \
+      bochs virtio_gpu evdev psmouse usbhid \
+      virtio_net e1000 e1000e r8169 \
+      fat vfat nls_cp437 nls_iso8859_1 nls_ascii nls_utf8 \
+      virtio_blk virtio_pci sd_mod sr_mod usb_storage uas xhci_hcd xhci_pci ehci_hcd ehci_pci uhci_hcd \
+      ahci ata_piix ata_generic pata_acpi
+fi
 
 echo "==> installing init, agent, content"
 cp src/init.sh  "$ROOT/init";      chmod 0755 "$ROOT/init"
@@ -64,6 +99,8 @@ else
   echo "==> no licence embedded (device will boot unlicensed)"
 fi
 
+printf '%s\n' "$VERSION" > "$ROOT/etc/hartwell/version.txt"
+
 cat > "$ROOT/etc/hartwell/version" <<EOF
 Hartwell OS 1.0
 build $(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -73,6 +110,39 @@ EOF
 echo "==> packing initramfs"
 ( cd "$ROOT" && find . -print0 | cpio --null -o -H newc 2>/dev/null | gzip -9 ) > build/initrd
 cp "$VMLINUZ" build/vmlinuz
+
+if [ "$ARCH" = arm64 ]; then
+  echo "==> packing bootable ARM64 disk image"
+  docker run --rm -v "$PWD/build:/b" -v "$PWD/$BASE:/base:ro" -v "$PWD/dist:/out" alpine:latest sh -c '
+    set -e
+    apk add --no-cache mtools dosfstools parted >/dev/null 2>&1
+    IMG=/tmp/hwo-arm64.img
+    dd if=/dev/zero of=$IMG bs=1M count=96 status=none
+    parted -s $IMG mklabel gpt mkpart ESP fat16 1MiB 80MiB set 1 esp on
+    OFF=$((1024*1024))
+    mkfs.vfat -F 16 -n HWOBOOT --offset 2048 $IMG $((79*1024*2)) >/dev/null
+    D="$IMG@@$OFF"
+    mmd -i "$D" ::EFI ::EFI/BOOT ::loader ::loader/entries
+    mcopy -i "$D" /base/systemd-bootaa64.efi ::EFI/BOOT/BOOTAA64.EFI
+    mcopy -i "$D" /b/vmlinuz ::vmlinuz
+    mcopy -i "$D" /b/initrd ::initrd
+    printf "default zz-hartwell\ntimeout 5\n" > /tmp/loader.conf
+    printf "title Hartwell OS\nlinux /vmlinuz\ninitrd /initrd\noptions console=ttyAMA0 console=tty0 quiet rdinit=/init video=1280x800\n" > /tmp/hwo.conf
+    printf "title Rescue (shell, no UI)\nlinux /vmlinuz\ninitrd /initrd\noptions console=ttyAMA0 console=tty0 rdinit=/init video=1280x800 hwo.rescue=1\n" > /tmp/rescue.conf
+    mcopy -i "$D" /tmp/loader.conf ::loader/loader.conf
+    mcopy -i "$D" /tmp/hwo.conf ::loader/entries/zz-hartwell.conf
+    mcopy -i "$D" /tmp/rescue.conf ::loader/entries/aa-rescue.conf
+    cp $IMG /out/hartwell-os-1.0-arm64.img
+  '
+  cp build/initrd "$DIST/initrd"
+  cp build/vmlinuz "$DIST/vmlinuz"
+  ( cd "$DIST" && ls | grep -v SHA256SUMS | xargs sha256sum > SHA256SUMS )
+  echo
+  echo "==> done (arm64)"
+  ls -lh "$DIST"
+  cat "$DIST/SHA256SUMS"
+  exit 0
+fi
 
 echo "==> Secure Boot: keys and signed UEFI loader for the disk image"
 ./tools/secureboot.sh init >/dev/null
@@ -175,7 +245,7 @@ CFG
 
 cp build/initrd "$DIST/initrd"
 cp build/vmlinuz "$DIST/vmlinuz"
-( cd "$DIST" && sha256sum hartwell-os-1.0.iso hartwell-os-1.0-proof.iso > SHA256SUMS )
+( cd "$DIST" && ls | grep -v SHA256SUMS | xargs sha256sum > SHA256SUMS )
 
 echo
 echo "==> done"

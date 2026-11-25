@@ -18,3 +18,4 @@ __pycache__/
 .wrangler/
 SALES.md
 shots/
+buildroot-arm64/

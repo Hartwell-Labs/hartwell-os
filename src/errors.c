@@ -41,6 +41,8 @@ static const ErrInfo ERRORS[] = {
     { "W7001", 'W', "clock not set",               "no RTC and no network time; the header clock is wrong" },
     { "E9001", 'E', "update signature invalid",    "the bundle was not signed by the vendor key" },
     { "E9002", 'E', "update older than running",   "downgrade refused; pass force only with a signed bundle" },
+    { "E9003", 'E', "no writable boot partition",  "the unit booted from read-only media; use a disk install or a USB stick with HWBOOT" },
+    { "E9004", 'E', "update bundle unreadable",    "the manifest is missing or the write failed; re-copy the bundle" },
     { NULL, 0, NULL, NULL }
 };
 

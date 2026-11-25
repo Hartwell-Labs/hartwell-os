@@ -12,7 +12,8 @@ import re
 import shutil
 import sys
 
-SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "buildroot", "modules")
+BASE = os.environ.get("HWO_BUILDROOT", "buildroot")
+SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), BASE, "modules")
 
 MODDIR = None
 for cand in sorted(os.listdir(os.path.join(SRC, "lib", "modules"))):
@@ -33,6 +34,9 @@ VER = os.path.basename(MODDIR)
 def deps_of(name):
     path = INDEX.get(name)
     if not path:
+        if os.environ.get("HWO_ALLOW_MISSING"):
+            print(f"    skip {name}: not in this kernel tree", file=sys.stderr)
+            return []
         raise SystemExit(f"module not found: {name}\nhave: {', '.join(sorted(INDEX)[:20])} ...")
     with gzip.open(path, "rb") as fh:
         blob = fh.read()

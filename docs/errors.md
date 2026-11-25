@@ -53,8 +53,10 @@ deliberately not reachable over the network.
 | W6001 | warning | media directory unreadable |
 | W6002 | warning | one media frame failed to decode, playback skips it |
 | W7001 | warning | clock is not set (no RTC, no network time) |
-| E9001 | error | update bundle signature invalid (reserved for the update channel) |
+| E9001 | error | update bundle signature or payload hash invalid |
 | E9002 | error | update is older than the running image (downgrade refused) |
+| E9003 | error | no writable boot partition for the update |
+| E9004 | error | update bundle unreadable, or the write failed |
 
 ---
 
@@ -221,8 +223,19 @@ PNG, non-interlaced, named `frameNNNN.png`.
 **Fix.** Give the unit network access (it takes a DHCP lease at boot) or set the
 clock in rescue mode with `date -s`. The UI reports UTC.
 
-## E9001 / E9002 — updates
+## E9001 / E9002 / E9003 / E9004 — updates
 
-Reserved for the signed update channel. E9001 means the bundle did not verify
-against the vendor key; E9002 means it is older than the running image and the
-unit refused the downgrade.
+**Symptom.** `hwo update BUNDLE` prints one of these and the unit keeps running
+the old image (the UI is untouched: a refused update never affects the screen).
+
+| Code | Cause | Fix |
+|---|---|---|
+| E9001 | the manifest signature does not verify against the vendor key compiled into `hwo`, or the payload's BLAKE2b does not match the `hash=` line | use a bundle built by `tools/hwo-lic make-update` with the vendor key; a re-signed or truncated file is refused |
+| E9002 | `version=` is not strictly newer than `/etc/hartwell/version.txt` | build a newer bundle, or pass `--force` when deliberately reverting to a known-good signed image |
+| E9003 | no writable boot partition at `/boot` (live ISO, read-only media) | update a disk install, or boot the unit from media with an `HWBOOT` partition |
+| E9004 | the file has no manifest, or the copy to `/boot` failed | re-copy the bundle and check free space on the boot partition |
+
+**Verify.** After a successful update: `/boot/version.txt` holds the new version,
+`/boot/initrd` is the new payload, and the serial log on the next boot prints
+`hartwell-os: cmdline ...` and `hartwell-os: boot ...` from the new image.
+See `docs/updates.md` for the bundle format and the vendor-side commands.

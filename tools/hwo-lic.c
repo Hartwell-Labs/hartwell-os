@@ -7,6 +7,7 @@
  *   hwo-lic gen    <dir>                 create <dir>/hwo-lic.key (seed) + .pub
  *   hwo-lic sign   <dir> <device>        print device=/licence= for a unit
  *   hwo-lic verify <dir> <device> <hex>  check a signature
+ *   hwo-lic make-update <dir> <ver> <initrd>   signed update bundle
  *
  * Build (host):  cc -O2 -o tools/hwo-lic tools/hwo-lic.c src/monocypher.c
  */
@@ -122,14 +123,58 @@ static int cmd_verify(const char *dir, const char *device, const char *sighex) {
     return r == 0 ? 0 : 3;
 }
 
+
+/* Make a signed update bundle: manifest + payload on stdout.
+ *
+ *   hwo-lic make-update <dir> <version> <initrd> > hwo-1.1.0.bundle
+ *
+ * The hash is BLAKE2b-256 of the payload and the signature covers the manifest
+ * lines exactly as the target rebuilds them, so verification needs no parsing
+ * ambushes on the receiving side. */
+static int cmd_make_update(const char *dir, const char *ver, const char *file) {
+    uint8_t sk[64], pk[32];
+    if (keypair_from_dir(dir, sk, pk) != 0) return 1;
+
+    FILE *f = fopen(file, "rb");
+    if (!f) { fprintf(stderr, "cannot open %s\n", file); return 1; }
+    crypto_blake2b_ctx ctx;
+    crypto_blake2b_init(&ctx, 32);
+    unsigned char buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0)
+        crypto_blake2b_update(&ctx, buf, n);
+    fclose(f);
+    uint8_t digest[32];
+    crypto_blake2b_final(&ctx, digest);
+    char hash[65], sig[129];
+    to_hex(digest, 32, hash);
+
+    char msg[512];
+    snprintf(msg, sizeof msg, "HWO-UPDATE 1\nversion=%s\nhash=%s\n", ver, hash);
+    uint8_t sigbin[64];
+    crypto_eddsa_sign(sigbin, sk, (const uint8_t *)msg, strlen(msg));
+    to_hex(sigbin, 64, sig);
+
+    printf("HWO-UPDATE 1\nversion=%s\nhash=%s\nsig=%s\n\n", ver, hash, sig);
+    f = fopen(file, "rb");
+    if (!f) return 1;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0)
+        fwrite(buf, 1, n, stdout);
+    fclose(f);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc >= 3 && strcmp(argv[1], "gen") == 0) return cmd_gen(argv[2]);
     if (argc >= 4 && strcmp(argv[1], "sign") == 0) return cmd_sign(argv[2], argv[3]);
     if (argc >= 5 && strcmp(argv[1], "verify") == 0) return cmd_verify(argv[2], argv[3], argv[4]);
+    if (argc >= 5 && strcmp(argv[1], "make-update") == 0)
+        return cmd_make_update(argv[2], argv[3], argv[4]);
     fprintf(stderr,
             "usage:\n"
             "  hwo-lic gen <dir>\n"
             "  hwo-lic sign <dir> <device>\n"
-            "  hwo-lic verify <dir> <device> <hex-signature>\n");
+            "  hwo-lic verify <dir> <device> <hex-signature>\n"
+            "  hwo-lic make-update <dir> <version> <initrd> > BUNDLE\n");
     return 64;
 }

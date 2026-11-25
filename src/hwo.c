@@ -422,12 +422,14 @@ static int dump_vcsa(const char *path)
     return 0;
 }
 
+int hwo_update(const char *bundle, int force);   /* src/update.c */
+
 /* ---------- main ---------- */
 
 int main(int argc, char **argv)
 {
     if (argc < 2) {
-        fprintf(stderr, "usage: hwo id|license|ui|errs|err CODE message|fbprobe|vcsa FILE\n");
+        fprintf(stderr, "usage: hwo id|license|ui|errs|err CODE message|fbprobe|vcsa FILE|update BUNDLE\n");
         return 2;
     }
     if (!strcmp(argv[1], "errs")) {
@@ -446,6 +448,14 @@ int main(int argc, char **argv)
         else if (argv[2][0] == 'W') sev = 'W';
         hwo_note(sev, argv[2], "%s", msg);
         return 0;
+    }
+    if (!strcmp(argv[1], "update")) {
+        if (argc < 3) {
+            fprintf(stderr, "usage: hwo update BUNDLE [--force]\n");
+            return 2;
+        }
+        int force = (argc > 3 && !strcmp(argv[3], "--force"));
+        return hwo_update(argv[2], force);
     }
     if (!strcmp(argv[1], "id")) {
         char d[32];
