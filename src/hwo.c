@@ -116,14 +116,30 @@ static void device_id(char out[32])
 }
 
 /* key format HWO-YYYY-XXXX, suffix must match this device */
-static int key_ok(const char *key, const char *dev)
+/* A person types this once, usually from an invoice: accept the key with or
+ * without the dashes, in lower or upper case, and compare it canonically.
+ * Rejecting "hwo 2026 v8ns" for the shape of the input, not its value, is a
+ * support ticket that costs a sale. */
+static int key_ok(const char *raw, const char *dev)
 {
-    if (strncmp(key, KEY_PFX, 4) != 0 || strlen(key) != 13 || key[8] != '-') return 0;
-    for (int i = 4; i < 8; i++)
-        if (key[i] < '0' || key[i] > '9') return 0;
+    char k[12];
+    int n = 0;
+    for (const char *p = raw; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '-' || c == ' ' || c == '_') continue;
+        if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 32);
+        if (n >= 11) return 0;
+        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z'))) return 0;
+        k[n++] = (char)c;
+    }
+    if (n != 11) return 0;
+    if (strncmp(k, "HWO", 3) != 0) return 0;
+    for (int i = 3; i < 7; i++)
+        if (k[i] < '0' || k[i] > '9') return 0;
     char want[5];
     sign4(dev, want);
-    return strcmp(key + 9, want) == 0;
+    k[11] = 0;
+    return strcmp(k + 7, want) == 0;
 }
 
 /* license file: key=HWO-2026-XXXX  device=HWO-AAAA-BBBB */

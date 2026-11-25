@@ -131,32 +131,6 @@ static void vgrad(int x, int y, int w, int h, unsigned top, unsigned bot)
 }
 
 /* corner coverage for a rounded rectangle */
-static void rrect(int x, int y, int w, int h, int r, unsigned c)
-{
-    if (r * 2 > w) r = w / 2;
-    if (r * 2 > h) r = h / 2;
-    fill(x + r, y, w - 2 * r, h, c);
-    fill(x, y + r, r, h - 2 * r, c);
-    fill(x + w - r, y + r, r, h - 2 * r, c);
-
-    for (int j = 0; j < r; j++) {
-        for (int i = 0; i < r; i++) {
-            /* supersampled quarter disc */
-            int inside = 0;
-            for (int sy = 0; sy < 2; sy++)
-                for (int sx = 0; sx < 2; sx++) {
-                    double dx = (double)(i * 2 + sx + 1) / 2.0 - r;
-                    double dy = (double)(j * 2 + sy + 1) / 2.0 - r;
-                    if (dx * dx + dy * dy <= (double)r * r) inside++;
-                }
-            unsigned a = (unsigned)inside * 255 / 4;
-            blend(x + r - 1 - i, y + r - 1 - j, c, a);           /* top-left */
-            blend(x + w - r + i, y + r - 1 - j, c, a);           /* top-right */
-            blend(x + r - 1 - i, y + h - r + j, c, a);           /* bottom-left */
-            blend(x + w - r + i, y + h - r + j, c, a);           /* bottom-right */
-        }
-    }
-}
 
 static void panel(int x, int y, int w, int h, unsigned bgc)
 {
@@ -637,15 +611,19 @@ static void draw_license(void)
     snprintf(line, sizeof line, "Send this device id to business@hartwell-labs.pl and type the key you get back.");
     text(&fb_body, cx, cy + 146, DIM, line);
 
-    text(&fb_body, cx, cy + 176, DIM, "Device id");
-    text(&fb_mono, cx + 300, cy + 176, AMBER, dev_id);
+    text(&fb_body, cx, cy + 196, DIM, "Device id");
+    text(&fb_mono, cx + 300, cy + 196, AMBER, dev_id);
 
-    text(&fb_body, cx, cy + 226, DIM, "Key");
+    text(&fb_body, cx, cy + 256, DIM, "Key");
 
-    int bx = cx + 300, by = cy + 214, bw = 420, bh = 46;
-    rrect(bx, by, bw, bh, 8, typed[0] ? GREEN : LINE);
-    rrect(bx + 1, by + 1, bw - 2, bh - 2, 7, PANEL2);
-    text(&fb_mono, bx + 16, by + 13, typed[0] ? TEXT : FAINT,
+    /* the field is a rule, like everything else: one pixel, no fill, no radius */
+    int bx = cx + 300, by = cy + 244, bw = 420, bh = 44;
+    unsigned bc = typed[0] ? GREEN : LINE;
+    fill(bx, by, bw, 1, bc);
+    fill(bx, by + bh - 1, bw, 1, bc);
+    fill(bx, by, 1, bh, bc);
+    fill(bx + bw - 1, by, 1, bh, bc);
+    text(&fb_mono, bx + 16, by + 12, typed[0] ? TEXT : FAINT,
          typed[0] ? typed : "HWO-YYYY-XXXX");
 
     time_t now = time(NULL);
@@ -656,15 +634,19 @@ static void draw_license(void)
     hit_add(bx, by, bw, bh, ACT_NONE);
 
     /* the same action ENTER performs, reachable with the pointer */
-    int abx = bx + bw + 24, abw = 168;
-    rrect(abx, by, abw, bh, 8, GREEN);
-    text(&fb_bold, abx + 56, by + 13, 0x08150D, "Activate");
+    int abx = bx + bw + 24, abw = 150;
+    unsigned ac = typed[0] ? GREEN : DIM;
+    fill(abx, by, abw, 1, ac);
+    fill(abx, by + bh - 1, abw, 1, ac);
+    fill(abx, by, 1, bh, ac);
+    fill(abx + abw - 1, by, 1, bh, ac);
+    text(&fb_bold, abx + 40, by + 12, typed[0] ? TEXT : DIM, "Activate");
     hit_add(abx, by, abw, bh, ACT_ACTIVATE);
 
     char hint[128] = "Type the key, then ENTER to activate";
     if (msg[0]) snprintf(hint, sizeof hint, "%s", msg);
-    text(&fb_body, cx, cy + 290, msg[0] ? (strstr(msg, "Invalid") ? RED : GREEN) : FAINT, hint);
-    text(&fb_body, cx, cy + 330, FAINT, "Offline check: the key only works on this machine");
+    text(&fb_body, cx, cy + 312, msg[0] ? (strstr(msg, "Invalid") ? RED : GREEN) : FAINT, hint);
+    text(&fb_body, cx, cy + 350, FAINT, "Offline check: the key only works on this machine");
 
     text_wrap(&fb_body, cx, cy + ch + 24, cw, 26, FAINT,
               "The key is valid only on this unit. Once it checks out, the appliance starts.");
@@ -910,19 +892,38 @@ static long long ms_now(void)
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/* A key is printed as HWO-YYYY-XXXX; store it that way whatever was typed,
+ * so the Licence screen reads like the invoice. */
+static void canon_key(const char *in, char *out, size_t n)
+{
+    char t[12];
+    int k = 0;
+    for (; *in && k < 11; in++) {
+        char c = *in;
+        if (c == '-' || c == ' ') continue;
+        if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+        t[k++] = c;
+    }
+    if (k == 11) snprintf(out, n, "%.3s-%.4s-%.4s", t, t + 3, t + 7);
+    else         snprintf(out, n, "%.15s", in);
+}
+
 /* the one place that turns a typed key into a licensed unit */
 static void activate(void)
 {
     if (is_licensed || !typed[0]) return;
     if (!hwo_key_valid(typed)) {
         snprintf(msg, sizeof msg, "Invalid key for %s", dev_id);
+        typed[0] = 0;
         return;
     }
-    if (hwo_save_key(typed) != 0) {
+    char canon[16];
+    canon_key(typed, canon, sizeof canon);
+    if (hwo_save_key(canon) != 0) {
         snprintf(msg, sizeof msg, "Key is valid but could not be saved (read-only media)");
         return;
     }
-    snprintf(lic_key, sizeof lic_key, "%s", typed);
+    snprintf(lic_key, sizeof lic_key, "%s", canon);
     is_licensed = 1;
     msg[0] = 0;
     typed[0] = 0;
@@ -1083,7 +1084,7 @@ static void key_press(const char *buf, int n)
         if (c >= 32 && c <= 126) {
             if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 32);   /* keys are uppercase */
             size_t l = strlen(typed);
-            if (l < sizeof typed - 1) {
+            if (l < 13) {
                 typed[l] = (char)c;
                 typed[l + 1] = 0;
             }

@@ -8,6 +8,11 @@ ROOT=build/rootfs
 DIST=dist
 VMLINUZ=${VMLINUZ:-buildroot/vmlinuz-lts}
 
+# the Alpine base is not committed: a clean checkout fetches it, pinned
+if [ ! -f buildroot/alpine-minirootfs.tar.gz ] || [ ! -f buildroot/vmlinuz-lts ]; then
+  sh tools/fetch-base.sh
+fi
+
 echo "==> staging rootfs"
 rm -rf build "$DIST"
 mkdir -p "$ROOT" "$DIST"

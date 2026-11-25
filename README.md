@@ -13,7 +13,7 @@ software emulation (TCG). No bare-metal measurement yet.
 
 | Part | Detail |
 |---|---|
-| Kernel | Linux 6.12.118 LTS (Alpine `vmlinuz-lts`), x86_64 |
+| Kernel | Linux 6.12.119 LTS (Alpine `vmlinuz-lts`), x86_64 |
 | Userspace | Alpine 3.22 minirootfs, busybox only |
 | Runtime | `hwo` — one static binary, 1.2 MB, no libc on target |
 | Image | bootable ISO, 25 MB, El Torito (BIOS + UEFI) + initramfs |
@@ -90,6 +90,8 @@ key=HWO-2026-V8NS
 device=HWO-3DD5-B123
 ```
 
+The key may be typed with or without the dashes and in any case (`hwo 2026 v8ns`
+activates the same unit); it is stored and shown as `HWO-YYYY-XXXX`.
 If the `device=` line does not match the machine, the key is rejected, so a copied key file
 does not move between units. A key typed on the device is written to the `HWO_CFG` state partition when the
 machine has one, so it survives reboot; the initramfs copy is only a cache. The Licence screen says which
@@ -250,6 +252,7 @@ docs/errors.md   the error book: every code, symptom → fix → verify
 src/fbui.c       the whole graphical interface: rail, pages, input, present()
 src/rescue.sh    rescue console banner, helpers and shell dressing
 tools/hwo-view.py  live view of a machine in a browser, with forwarded input
+tools/fetch-base.sh  pinned Alpine kernel + rootfs fetch for a clean checkout
 src/font.h       generated bitmap atlases (393 KB)
 src/init.sh      PID 1: mount, load DRM modules, supervise the UI
 src/agent.sh     fleet agent (DHCP-aware, outbound HTTP)
