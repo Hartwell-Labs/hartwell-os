@@ -23,6 +23,7 @@ rm -rf "$ROOT"/var/cache "$ROOT"/usr/share/man "$ROOT"/usr/share/doc "$ROOT"/opt
 echo "==> building appliance runtime"
 # vendor EdDSA licence key: the public half is embedded in the binary, the seed
 # stays in keys/ for the seller. Generated once and then reused.
+mkdir -p keys            # ignored by git: a clean checkout starts without it
 if [ ! -f keys/hwo-lic.pub ]; then
   echo "==> generating vendor licence key"
   gcc -O2 -o build/hwo-lic tools/hwo-lic.c src/monocypher.c
