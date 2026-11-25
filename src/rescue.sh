@@ -4,8 +4,8 @@
 # someone standing at the boot menu picked "Rescue". No UI, no fleet agent, no
 # network reachability: a console and the error log.
 
-G=$(printf '\033[1;32m'); D=$(printf '\033[2m'); A=$(printf '\033[33m')
-R=$(printf '\033[31m');   N=$(printf '\033[0m')
+B=$(printf '\033[1m'); D=$(printf '\033[2m'); A=$(printf '\033[33m')
+R=$(printf '\033[31m'); N=$(printf '\033[0m')
 export PATH="/:/bin:/sbin:/usr/bin:/usr/sbin"
 
 mine=$(/hwo id 2>/dev/null)
@@ -19,46 +19,46 @@ if [ -r /run/hwo.err ]; then
     errs=$(awk '$3 != "W" && NF' /run/hwo.err 2>/dev/null | wc -l)
 fi
 
-# A rescue console is read by a person under pressure: one framed block that
-# answers who, which image, which state, what the log holds - then the four
-# things worth doing.
-printf '\n  %s+--------------------------------------------------------------+%s\n' "$G" "$N"
-printf '  %s|%s  %sHARTWELL OS%s %s.%s %srescue console%s%*s%s|%s\n' \
-    "$G" "$N" "$G" "$N" "$D" "$N" "$G" "$N" 19 "" "$G" "$N"
-printf '  %s+--------------------------------------------------------------+%s\n\n' "$G" "$N"
+# Same language as the screen: a sheet of facts separated by rules, one colour
+# for what is wrong, plain text for everything else. A person reads this under
+# pressure, so it answers who/which/what before it lists commands.
+rule="${D}--------------------------------------------------------------${N}"
 
-printf '  %s%-8s%s%s\n' "$D" "unit" "$N" "$mine"
-printf '  %s%-8s%s%s  %s·%s  %skernel %s%s\n' "$D" "image" "$N" "hartwell-os 1.0" "$D" "$N" "$D" "$krel" "$N"
-printf '  %s%-8s%s%s\n' "$D" "state" "$N" "$state"
+printf '\n  %sHartwell OS%s  %srescue console%s\n' "$B" "$N" "$D" "$N"
+printf '  %s\n\n' "$rule"
+
+printf '  %s%-8s%s %s\n' "$D" "unit"  "$N" "$mine"
+printf '  %s%-8s%s %s 1.0  %skernel %s%s\n' "$D" "image" "$N" "hartwell-os" "$D" "$krel" "$N"
+printf '  %s%-8s%s %s\n' "$D" "state" "$N" "$state"
 if [ "$errs" -gt 0 ] 2>/dev/null; then
-    printf '  %s%-8s%s%s%d error(s)%s, %d warning(s)   %stype: hwo errs%s\n' \
-        "$D" "log" "$N" "$R" "$errs" "$N" "$warns" "$D" "$N"
+    printf '  %s%-8s%s %s%d error(s)%s, %s%d warning(s)%s   %shwo errs%s\n' \
+        "$D" "log" "$N" "$R" "$errs" "$N" "$A" "$warns" "$N" "$D" "$N"
 else
-    printf '  %s%-8s%s%d error(s), %s%d warning(s)%s   %stype: hwo errs%s\n' \
+    printf '  %s%-8s%s %d error(s), %s%d warning(s)%s   %shwo errs%s\n' \
         "$D" "log" "$N" "$errs" "$A" "$warns" "$N" "$D" "$N"
 fi
 
-printf '\n  %shwo errs%s   log, with the fix for every code\n' "$G" "$N"
-printf '  %shelp%s       the short card of commands\n' "$G" "$N"
-printf '  %sls /state%s   licence and content, if the partition mounted\n' "$G" "$N"
-printf '  %spoweroff%s   leave rescue mode\n\n' "$G" "$N"
+printf '\n  %s\n\n' "$rule"
+printf '  %s%-10s%s %s\n' "$N" "hwo errs" "$N" "${D}log, with the fix for every code$N"
+printf '  %-10s %s\n' "help"     "${D}this card$N"
+printf '  %-10s %s\n' "ls /state" "${D}licence and content, if the partition mounted$N"
+printf '  %-10s %s\n\n' "poweroff" "${D}leave rescue mode$N"
 
-# Interactive dressing: a coloured prompt, three helpers, a help card. Kept in
-# ENV so a nested shell is dressed the same way.
+# Interactive dressing: a quiet prompt and three helpers, kept in ENV so a
+# nested shell is dressed the same way.
 mkdir -p /etc
 cat > /etc/hwo-rescue.sh <<'RESCUE'
-
-PS1='\[\033[1;32m\]rescue\[\033[0m\] \[\033[2m\]\w\[\033[0m\] # '
+PS1='\[\033[2m\]rescue\[\033[0m\] # '
 
 errs()  { hwo errs "$@"; }
 fixes() { hwo errs | sed -n '/Fixes/,$p'; }
 unit()  { hwo id; }
 help() {
-    printf '\n  \033[1;32mRESCUE\033[0m \033[2m- commands\033[0m\n\n'
-    printf '  errs     error log, plus the fix for each code\n'
-    printf '  fixes    only the fix lines\n'
-    printf '  unit     unit id, the value a licence is bound to\n'
-    printf '  help     this card\n\n'
+    printf '\n'
+    printf '  errs      error log, plus the fix for each code\n'
+    printf '  fixes     only the fix lines\n'
+    printf '  unit      unit id, the value a licence is bound to\n'
+    printf '  help      this card\n\n'
 }
 RESCUE
 export ENV=/etc/hwo-rescue.sh

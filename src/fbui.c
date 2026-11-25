@@ -160,14 +160,10 @@ static void rrect(int x, int y, int w, int h, int r, unsigned c)
 
 static void panel(int x, int y, int w, int h, unsigned bgc)
 {
-    rrect(x, y, w, h, 12, LINE);
-    rrect(x + 1, y + 1, w - 2, h - 2, 11, bgc);
-    /* a one-pixel highlight on the top edge and a shadow underneath read as
-       a raised surface on a dark screen, and cost two lines of pixels */
-    for (int i = 14; i < w - 14; i++)
-        blend(x + i, y + 1, 0xFFFFFF, 10);
-    for (int i = 14; i < w - 14; i++)
-        blend(x + i, y + h, 0x000000, 70);
+    (void)bgc; (void)h;
+    /* a section is marked by one rule and the space above it, the way a spec
+       sheet is: no box, no radius, no shadow, nothing to look at but text */
+    fill(x, y, w, 1, LINE);
 }
 
 
@@ -394,10 +390,9 @@ static void build_chrome_bg(void)
        full height of the screen instead of losing a strip to a tab bar */
     fill(0, 0, RAIL, H, PANEL2);
     fill(RAIL, 0, 1, H, LINE);
-    vgrad(0, 0, 3, H, GREEN, CYAN);
-    rrect(28, 30, 13, 13, 3, GREEN);
-    text(&fb_bold, 52, 24, TEXT, "HARTWELL");
-    text(&fb_bold, 52, 47, DIM, "OS 1.0");
+    /* one baseline across the whole sheet, level with the rail footer rule */
+    fill(RAIL + 1, H - 132, W - RAIL - 1, 1, 0x1B242E);
+    text(&fb_bold, 28, 28, TEXT, "Hartwell OS");
 }
 
 static unsigned char *chrome_bg;      /* static background, built once */
@@ -419,58 +414,29 @@ static void draw_chrome(void)
     int ny = 118;
     for (int i = 0; i < 4; i++) {
         int active = page == i;
-        if (active) {
-            rrect(16, ny - 12, RAIL - 32, 52, 10, LINE);
-            rrect(17, ny - 11, RAIL - 34, 50, 9, PANEL);
-            fill(17, ny + 2, 3, 24, GREEN);
-        }
-        rrect(40, ny + 6, 7, 7, 4, active ? GREEN : FAINT);
-        text(active ? &fb_bold : &fb_body, 60, ny, active ? TEXT : DIM, names[i]);
+        text(active ? &fb_bold : &fb_body, 28, ny, active ? TEXT : DIM, names[i]);
         hit_add(16, ny - 12, RAIL - 32, 52, ACT_PAGE0 + i);
         ny += 62;
     }
 
-    cap(&fb_bold, 28, ny + 16, 0x3A4756, "KEYS 1-4", 2);
 
     /* ---- rail footer: state, identity, clock ---- */
     int fy = H - 132;
     fill(28, fy, RAIL - 56, 1, LINE);
 
     unsigned col = is_licensed ? GREEN : RED;
-    const char *word = is_licensed ? "LICENSED" : "UNLICENSED";
-    int pw = text_w(&fb_bold, word) + 42;
-    rrect(28, fy + 22, pw, 30, 15, LINE);
-    rrect(29, fy + 23, pw - 2, 28, 14, PANEL);
-    rrect(30 + 10, fy + 33, 8, 8, 4, col);
-    text(&fb_bold, 30 + 24, fy + 29, col, word);
-
-    text(&fb_body, 28, fy + 66, FAINT, dev_id);
+    text(&fb_body, 28, fy + 22, col, is_licensed ? "Licensed" : "Unlicensed");
+    text(&fb_mono, 28, fy + 52, FAINT, dev_id);
 
     char clock[16];
     time_t now = time(NULL);
     struct tm tm;
     gmtime_r(&now, &tm);
     strftime(clock, sizeof clock, "%H:%M UTC", &tm);
-    text(&fb_mono, 28, fy + 90, TEXT, clock);
+    text(&fb_mono, 28, fy + 76, DIM, clock);
 
-    /* the focused screen gets its name and the action hint top-right, where a
-       dashboard usually puts its context line */
-    static const char *eyebrow[4] = { "MACHINE", "DIAGNOSTICS", "ENTITLEMENT", "PLAYBACK" };
-    cap(&fb_bold, RAIL + 40, 30, FAINT, eyebrow[page], 2);
-    text_r(&fb_body, W - 40, 27, 0x3E4C5C,
-           is_licensed ? "keyboard 1-4  /  click" : "type the key, then ENTER");
-}
-
-/* Pilled status chip: a tinted capsule with a dot, used instead of plain text
-   so the screen has one obvious answer to "is this unit working?". */
-static void chip(int x, int y, const char *label, unsigned col)
-{
-    int tw = text_w(&fb_bold, label);
-    int w = tw + 52, h = 34;
-    rrect(x, y, w, h, h / 2, LINE);
-    rrect(x + 1, y + 1, w - 2, h - 2, (h - 2) / 2, PANEL2);
-    rrect(x + 17, y + h / 2 - 4, 8, 8, 4, col);
-    text(&fb_bold, x + 33, y + 6, col, label);
+    text_r(&fb_body, W - 40, 27, FAINT,
+           is_licensed ? "1-4 to switch screen" : "type the key, then ENTER");
 }
 
 static void mem_stat(long *free_mb, long *total_mb)
@@ -490,11 +456,11 @@ static void mem_stat(long *free_mb, long *total_mb)
 static void tile(int x, int y, int w, int h, const char *caption,
                  const char *value, const char *sub, unsigned accent)
 {
-    panel(x, y, w, h, PANEL);
-    fill(x + 1, y + 18, 3, h - 36, accent);
-    cap(&fb_bold, x + 26, y + 18, FAINT, caption, 2);
-    text(&fb_h1, x + 24, y + 48, TEXT, value);
-    if (sub && sub[0]) text_clip(&fb_mono, x + 26, y + h - 32, DIM, sub, w - 52);
+    (void)h;
+    text(&fb_body, x, y + 20, FAINT, caption);
+    unsigned vc = (accent == AMBER || accent == RED) ? accent : TEXT;
+    text(&fb_h1, x, y + 48, vc, value);
+    if (sub && sub[0]) text_clip(&fb_mono, x, y + h - 32, DIM, sub, w);
 }
 
 static void draw_overview(void)
@@ -504,29 +470,25 @@ static void draw_overview(void)
 
     /* ---- status card ---- */
     panel(cx, hy, cw, hh, PANEL);
-    fill(cx + 1, hy + 20, 3, hh - 40, is_licensed ? GREEN : RED);
 
-    text(&fb_h1, cx + 36, hy + 30, TEXT, content.title);
+    text(&fb_h1, cx, hy + 30, TEXT, content.title);
 
     char src[32] = "local";
     hwo_read("/run/fleet.status", src, sizeof src);
     char meta[160];
-    snprintf(meta, sizeof meta, "%s   |   since boot   |   source %s",
+    snprintf(meta, sizeof meta, "%s, source %s",
              is_licensed ? "live" : "locked", strcmp(src, "local") ? "fleet" : "local");
-    text(&fb_body, cx + 38, hy + 86, FAINT, meta);
+    text(&fb_body, cx, hy + 86, DIM, meta);
 
-    chip(cx + cw - 208, hy + 34, is_licensed ? "RUNNING" : "LOCKED",
-         is_licensed ? GREEN : RED);
-
-    fill(cx + 36, hy + 128, cw - 72, 1, LINE);
+    fill(cx, hy + 128, cw, 1, LINE);
 
     /* content rows: label in the left column, value aligned in the right */
     int y = hy + 152;
     int shown = content.n > 6 ? 6 : content.n;
-    int half = (cw - 72) / 2;
+    int half = (cw) / 2;
     for (int i = 0; i < shown; i++) {
         int col = i % 2, row = i / 2;
-        int bx = cx + 36 + col * half;
+        int bx = cx + col * half;
         int by = y + row * 44;
         if (content.label[i][0]) {
             text(&fb_body, bx, by, FAINT, content.label[i]);
@@ -539,6 +501,7 @@ static void draw_overview(void)
     /* ---- metric row ---- */
     int gy = hy + hh + 24, gh = 168;
     int gap = 20, gw = (cw - 2 * gap) / 3;
+    fill(cx, gy - 4, cw, 1, LINE);
 
     char up[64], st[64] = "local";
     long fm = 0, tm = 0;
@@ -556,49 +519,28 @@ static void draw_overview(void)
     unsigned fcol = !strcmp(st, "online") ? GREEN : !strcmp(st, "offline") ? AMBER : DIM;
     tile(cx + 2 * (gw + gap), gy, gw, gh, "FLEET", st, "outbound poll / 30 s", fcol);
 
-    if (tm > 0) {
-        int used = (int)(((tm - fm) * 100) / tm);
-        int bx = cx + gw + gap + 26, by = gy + gh - 58;
-        int bw = gw - 52;
-        fill(bx, by, bw, 4, LINE);
-        fill(bx, by, bw * used / 100, 4, GREEN);
-    }
-
-    /* ---- facts strip ---- */
-    int sy = gy + gh + 20;
-    const char *facts[] = { "no shell", "no listening sockets", "5 UI exits -> reboot" };
-    int fx = cx + 6;
-    for (int i = 0; i < 3; i++) {
-        int w = text_w(&fb_mono, facts[i]) + 44;
-        rrect(fx, sy, w, 30, 15, LINE);
-        rrect(fx + 1, sy + 1, w - 2, 28, 14, PANEL2);
-        rrect(fx + 15, sy + 11, 7, 7, 3, FAINT);
-        text(&fb_mono, fx + 30, sy + 6, DIM, facts[i]);
-        fx += w + 12;
-    }
+    /* ---- facts strip: sits on the baseline, not in the middle of nowhere ---- */
+    text(&fb_body, cx, H - 112, FAINT,
+         "No shell. No listening sockets. Five consecutive UI crashes reboot the unit.");
 }
 
 static void draw_system(void)
 {
     int cx = RAIL + 40, cy = 84, cw = W - RAIL - 80, ch = 366;
     panel(cx, cy, cw, ch, PANEL);
-    fill(cx + 1, cy + 20, 3, ch - 40, is_licensed ? GREEN : RED);
-    text(&fb_h1, cx + 36, cy + 30, TEXT, "System");
-    chip(cx + cw - 208, cy + 34, is_licensed ? "RUNNING" : "LOCKED",
-         is_licensed ? GREEN : RED);
+    text(&fb_h1, cx, cy + 30, TEXT, "System");
 
-    /* The interface should say when it is running degraded, not only the log:
-       one chip with the count, next to the state chip. */
+    /* Degraded state is said on the screen, not only in the log: a plain
+       count, right-aligned, in the colour of its severity. */
     int errs = 0, warns = 0;
     hwo_errs_split(&errs, &warns);
     if (errs || warns) {
         char lbl[24];
         if (errs)
-            snprintf(lbl, sizeof lbl, "%d ERR%s", errs, errs == 1 ? "" : "S");
+            snprintf(lbl, sizeof lbl, "%d error%s", errs, errs == 1 ? "" : "s");
         else
-            snprintf(lbl, sizeof lbl, "%d WARN%s", warns, warns == 1 ? "" : "S");
-        int w = text_w(&fb_bold, lbl) + 52;
-        chip(cx + cw - 208 - 10 - w, cy + 34, lbl, errs ? RED : AMBER);
+            snprintf(lbl, sizeof lbl, "%d warning%s", warns, warns == 1 ? "" : "s");
+        text_r(&fb_body, cx + cw, cy + 38, errs ? RED : AMBER, lbl);
     }
 
     struct utsname u;
@@ -630,11 +572,11 @@ static void draw_system(void)
         else                    snprintf(vals[6], 128, "RAM only (no HWO_CFG)");
     }
 
-    fill(cx + 36, cy + 128, cw - 72, 1, LINE);
-    int half = (cw - 72) / 2;
+    fill(cx, cy + 128, cw, 1, LINE);
+    int half = (cw) / 2;
     for (int i = 0; i < 8; i++) {
         int col = i % 2, row = i / 2;
-        int bx = cx + 36 + col * half;
+        int bx = cx + col * half;
         int by = cy + 152 + row * 44;
         /* values sit in one column per half, so the eye can scan the list
            instead of hunting for where each label ends */
@@ -647,10 +589,10 @@ static void draw_system(void)
     panel(cx, gy, gw, gh, PANEL);
     panel(cx + gw + 24, gy, gw, gh, PANEL);
 
-    cap(&fb_bold, cx + 28, gy + 22, FAINT, "SESSION", 2);
-    text(&fb_mono, cx + 28, gy + 58, TEXT, "no shell / no login");
-    text(&fb_mono, cx + 28, gy + 88, DIM, "no listening sockets");
-    text(&fb_mono, cx + 28, gy + 118, DIM, "5 UI exits -> reboot");
+    cap(&fb_bold, cx, gy + 22, FAINT, "SESSION", 2);
+    text(&fb_mono, cx, gy + 58, TEXT, "no shell / no login");
+    text(&fb_mono, cx, gy + 88, DIM, "no listening sockets");
+    text(&fb_mono, cx, gy + 118, DIM, "5 UI exits -> reboot");
 
     cap(&fb_bold, cx + gw + 52, gy + 22, FAINT, "AGENT", 2);
     char st[64] = "local";
@@ -667,44 +609,38 @@ static void draw_license(void)
 {
     int cx = RAIL + 40, cy = 84, cw = W - RAIL - 80, ch = is_licensed ? 360 : 420;
     panel(cx, cy, cw, ch, PANEL);
-    fill(cx + 1, cy + 20, 3, ch - 40, is_licensed ? GREEN : RED);
-    text(&fb_h1, cx + 36, cy + 30, TEXT, is_licensed ? "Licence" : "Activate this device");
-    chip(cx + cw - 208, cy + 34, is_licensed ? "ACTIVE" : "UNLICENSED",
-         is_licensed ? GREEN : RED);
+    text(&fb_h1, cx, cy + 30, TEXT, is_licensed ? "Licence" : "Activate this device");
 
-    fill(cx + 36, cy + 126, cw - 72, 1, LINE);
+    fill(cx, cy + 126, cw, 1, LINE);
 
     if (is_licensed) {
-        text(&fb_body, cx + 36, cy + 150, DIM, "Device id");
+        text(&fb_body, cx, cy + 150, DIM, "Device id");
         text(&fb_mono, cx + 300, cy + 150, TEXT, dev_id);
-        text(&fb_body, cx + 36, cy + 190, DIM, "Key");
+        text(&fb_body, cx, cy + 190, DIM, "Key");
         text(&fb_mono, cx + 300, cy + 190, GREEN, lic_key);
-        text(&fb_body, cx + 36, cy + 230, DIM, "Bound to");
+        text(&fb_body, cx, cy + 230, DIM, "Bound to");
         text(&fb_mono, cx + 300, cy + 230, TEXT, "this machine's DMI UUID");
-        text(&fb_body, cx + 36, cy + 270, DIM, "Validated");
+        text(&fb_body, cx, cy + 270, DIM, "Validated");
         text(&fb_mono, cx + 300, cy + 270, TEXT, "offline / no activation server");
-        text(&fb_body, cx + 36, cy + 310, DIM, "Stored on");
+        text(&fb_body, cx, cy + 310, DIM, "Stored on");
         text(&fb_mono, cx + 300, cy + 310,
              hwo_state_persistent() ? GREEN : AMBER,
              hwo_state_persistent() ? "HWO_CFG partition, survives reboot"
                                     : "initramfs only, lost on reboot");
 
-        int gy = cy + ch + 24, gh = 150;
-        panel(cx, gy, cw, gh, PANEL);
-        cap(&fb_bold, cx + 28, gy + 22, FAINT, "WHAT THIS LICENCE COVERS", 2);
-        text(&fb_body, cx + 28, gy + 60, TEXT, "One machine, perpetual use. Updates for 12 months. Transfers with the DMI UUID.");
-        text(&fb_body, cx + 28, gy + 96, DIM, "Support: business@hartwell-labs.pl");
+        text(&fb_body, cx, H - 112, FAINT,
+             "Perpetual, one machine. Updates for 12 months. Support: business@hartwell-labs.pl");
         return;
     }
 
     char line[160];
     snprintf(line, sizeof line, "Send this device id to business@hartwell-labs.pl and type the key you get back.");
-    text(&fb_body, cx + 36, cy + 146, DIM, line);
+    text(&fb_body, cx, cy + 146, DIM, line);
 
-    text(&fb_body, cx + 36, cy + 176, DIM, "Device id");
+    text(&fb_body, cx, cy + 176, DIM, "Device id");
     text(&fb_mono, cx + 300, cy + 176, AMBER, dev_id);
 
-    text(&fb_body, cx + 36, cy + 226, DIM, "Key");
+    text(&fb_body, cx, cy + 226, DIM, "Key");
 
     int bx = cx + 300, by = cy + 214, bw = 420, bh = 46;
     rrect(bx, by, bw, bh, 8, typed[0] ? GREEN : LINE);
@@ -722,27 +658,16 @@ static void draw_license(void)
     /* the same action ENTER performs, reachable with the pointer */
     int abx = bx + bw + 24, abw = 168;
     rrect(abx, by, abw, bh, 8, GREEN);
-    text(&fb_bold, abx + 36, by + 13, 0x08150D, "Activate");
+    text(&fb_bold, abx + 56, by + 13, 0x08150D, "Activate");
     hit_add(abx, by, abw, bh, ACT_ACTIVATE);
 
     char hint[128] = "Type the key, then ENTER to activate";
     if (msg[0]) snprintf(hint, sizeof hint, "%s", msg);
-    text(&fb_body, cx + 36, cy + 290, msg[0] ? (strstr(msg, "Invalid") ? RED : GREEN) : FAINT, hint);
-    text(&fb_body, cx + 36, cy + 330, FAINT, "Offline check: the key only works on this machine");
+    text(&fb_body, cx, cy + 290, msg[0] ? (strstr(msg, "Invalid") ? RED : GREEN) : FAINT, hint);
+    text(&fb_body, cx, cy + 330, FAINT, "Offline check: the key only works on this machine");
 
-    int gy = cy + ch + 24, gh = 150, gw = (cw - 48) / 3;
-    const char *hdr[3] = { "1  SEND THE ID", "2  GET THE KEY", "3  TYPE IT HERE" };
-    const char *sub[3] = {
-        "This screen shows the machine's own id. Nothing else is needed.",
-        "A key in the form HWO-YYYY-XXXX, valid only on this unit.",
-        "The appliance starts working the moment the key checks out.",
-    };
-    for (int i = 0; i < 3; i++) {
-        int x = cx + i * (gw + 24);
-        panel(x, gy, gw, gh, PANEL);
-        text(&fb_bold, x + 24, gy + 22, GREEN, hdr[i]);
-        text_wrap(&fb_body, x + 24, gy + 60, gw - 48, 26, DIM, sub[i]);
-    }
+    text_wrap(&fb_body, cx, cy + ch + 24, cw, 26, FAINT,
+              "The key is valid only on this unit. Once it checks out, the appliance starts.");
 }
 
 /* fit a decoded image into a box, whole image visible, centred */
@@ -832,15 +757,15 @@ static void draw_media(void)
 {
     int cx = RAIL + 40, cy = 84, cw = W - RAIL - 80, ch = 430;
     panel(cx, cy, cw, ch, PANEL);
-    text(&fb_h1, cx + 36, cy + 34, TEXT, "Media");
+    text(&fb_h1, cx, cy + 34, TEXT, "Media");
 
     if (media_frames > 0) {
         if (media_index < 0) media_load(0);
         char meta[160];
         snprintf(meta, sizeof meta, "local frames   |   %d fps   |   frame %d of %d",
                  media_fps, media_index < 0 ? 0 : media_index + 1, media_frames);
-        text(&fb_body, cx + 36, cy + 90, FAINT, meta);
-        fill(cx + 36, cy + 126, cw - 72, 1, LINE);
+        text(&fb_body, cx, cy + 90, FAINT, meta);
+        fill(cx, cy + 126, cw, 1, LINE);
         draw_png_fit(&frame, cx + 20, cy + 140, cw - 40, ch - 162);
         return;
     }
@@ -848,23 +773,23 @@ static void draw_media(void)
     if (still.rgba) {
         char meta[160];
         snprintf(meta, sizeof meta, "local still   |   %d x %d   |   %s", still.w, still.h, media_dir);
-        text(&fb_body, cx + 36, cy + 90, FAINT, meta);
-        fill(cx + 36, cy + 126, cw - 72, 1, LINE);
+        text(&fb_body, cx, cy + 90, FAINT, meta);
+        fill(cx, cy + 126, cw, 1, LINE);
         draw_png_fit(&still, cx + 20, cy + 140, cw - 40, ch - 162);
         return;
     }
 
-    text(&fb_body, cx + 36, cy + 90, FAINT, "no media on this unit   |   local files only, no network");
-    fill(cx + 36, cy + 126, cw - 72, 1, LINE);
+    text(&fb_body, cx, cy + 90, FAINT, "no media on this unit   |   local files only, no network");
+    fill(cx, cy + 126, cw, 1, LINE);
 
-    text(&fb_body, cx + 36, cy + 152, TEXT, "Copy PNG frames to the state partition and this screen plays them:");
-    text(&fb_mono, cx + 36, cy + 190, GREEN, "/state/media/frame0000.png ... frameNNNN.png");
-    text(&fb_mono, cx + 36, cy + 220, GREEN, "/state/media/fps        (1-60, default 10)");
-    text(&fb_mono, cx + 36, cy + 250, GREEN, "/state/media/poster.png (single still)");
+    text(&fb_body, cx, cy + 152, TEXT, "Copy PNG frames to the state partition and this screen plays them:");
+    text(&fb_mono, cx, cy + 190, GREEN, "/state/media/frame0000.png ... frameNNNN.png");
+    text(&fb_mono, cx, cy + 220, GREEN, "/state/media/fps        (1-60, default 10)");
+    text(&fb_mono, cx, cy + 250, GREEN, "/state/media/poster.png (single still)");
 
-    text(&fb_body, cx + 36, cy + 296, DIM, "Convert a clip on any workstation:");
-    text(&fb_mono, cx + 36, cy + 326, TEXT, "ffmpeg -i clip.mp4 -vf scale=640:-2 -r 10 /run/media/frame%04d.png");
-    text(&fb_body, cx + 36, cy + 366, FAINT, "PNG 8-bit (RGB, RGBA, grey or palette), non-interlaced. Frames loop.");
+    text(&fb_body, cx, cy + 296, DIM, "Convert a clip on any workstation:");
+    text(&fb_mono, cx, cy + 326, TEXT, "ffmpeg -i clip.mp4 -vf scale=640:-2 -r 10 /run/media/frame%04d.png");
+    text(&fb_body, cx, cy + 366, FAINT, "PNG 8-bit (RGB, RGBA, grey or palette), non-interlaced. Frames loop.");
 }
 
 static void draw_footer(void)
