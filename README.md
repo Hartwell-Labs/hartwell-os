@@ -81,16 +81,20 @@ and display driver, which is a configuration change (see `tools/stage_modules.py
 
 ```sh
 ./build.sh
-./build/hwo-lic make-update keys 1.1.0 build/initrd > hwo-1.1.0.bundle
+./build/hwo-lic make-update keys 1.1.0 build > hwo-1.1.0.bundle
 # on the unit, from the Rescue shell:
 hwo update /media/usb/hwo-1.1.0.bundle
 ```
 
-The bundle is a manifest plus the new initramfs, signed with the vendor key that
-is already compiled into `hwo`. The unit refuses a bad signature or a payload
-that does not match its hash (E9001), refuses a version that is not strictly
-newer (E9002), and refuses to pretend when there is no writable boot partition
-(E9003). Full format, refusals and limits: `docs/updates.md`.
+The bundle is a manifest plus the new kernel and initramfs, signed with the
+vendor key that is already compiled into `hwo`. It is written into the boot slot
+that is **not** running; the running slot is never touched. Until the new image
+confirms itself (25 s of live UI), each boot counts down, and a slot that never
+confirms is dropped in favour of the previous one (W9001). `hwo rollback` does
+that by hand. The unit refuses a bad signature or a payload that does not match
+its hash (E9001), a version that is not strictly newer (E9002), and never
+pretends when there is no writable boot partition (E9003). Full format, refusals
+and limits: `docs/updates.md`.
 
 ## Run
 

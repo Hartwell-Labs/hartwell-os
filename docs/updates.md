@@ -8,23 +8,45 @@ can arrive on a USB stick, over email, or from a fleet server.
 ## Make a bundle (vendor side)
 
 ```sh
-./build.sh                                   # produces build/initrd
-./build/hwo-lic make-update keys 1.1.0 build/initrd > hwo-1.1.0.bundle
+./build.sh                                   # produces build/vmlinuz, build/initrd
+./build/hwo-lic make-update keys 1.1.0 build > hwo-1.1.0.bundle
 ```
+
+`<image>` is a directory holding `vmlinuz` and `initrd`: a hole A/B payload.
+Passing a single initramfs file still produces a v1 bundle, which replaces only
+the initramfs and borrows the kernel the unit is running.
 
 The manifest the tool writes, and the target rebuilds byte for byte:
 
 ```
-HWO-UPDATE 1
+HWO-UPDATE 2
 version=1.1.0
-hash=<BLAKE2b-256 of the payload, hex>
-sig=<Ed25519 over the three lines above, hex>
+kernel=<BLAKE2b-256 of vmlinuz, hex>
+kernellen=<bytes of vmlinuz in the payload>
+initrd=<BLAKE2b-256 of initrd, hex>
+sig=<Ed25519 over the lines above, hex>
 
-<payload: gzip initramfs>
+<payload: vmlinuz bytes, then gzip initramfs>
 ```
 
 The signing key is `keys/hwo-lic.key` — the same vendor key that signs licences.
 It never leaves the vendor machine; `keys/` is git-ignored.
+
+## Tested end to end
+
+`tools/ab-qemu-test.py` drives the real ARM64 image in QEMU through three boots:
+
+```sh
+./tools/ab-qemu-test.py --image dist/hartwell-os-1.0-arm64.img \
+    --bundle build --version 1.1.0
+```
+
+It installs a bundle from rescue mode, checks that the inactive slot received
+kernel and initramfs while the running slot was untouched, boots the new slot
+until the UI watchdog confirms it, then forces `tries=0` on the next boot and
+expects the unit to log W9001, rewrite the loader entry and come back on the old
+slot. It needs docker (for `qemu-system-aarch64` and mtools) and a built
+`build/hwo-lic`; it works on a copy, so the shipped image is never touched.
 
 ## Apply it on the unit
 
@@ -114,11 +136,14 @@ no /boot (read-only image)         -> E9003
   image (and, on ARM, a new `vmlinuz` on the ESP). This is deliberate: the kernel
   is what boots, and swapping it without a second boot slot to fall back to is
   how appliances get bricked.
-- **A/B covers the initramfs, not the kernel.** The kernel and the bootloader
-  live outside the slots, so a kernel change still needs a new image. A kernel
-  that panics before `/init` runs is not rolled back automatically; the unit
-  needs the Rescue entry or a technician. Making the kernel a slot payload needs
-  a stage-0 loader and is a separate piece of work.
+- **Two slots, kernel included.** Each slot carries its own `vmlinuz` and
+  `initrd`, so a kernel change is a normal update and the running slot is never
+  overwritten. What is still outside the slots is `systemd-boot` itself.
+- **A kernel that panics before `/init` runs is not counted.** The attempts are
+  decremented by the initramfs, so a kernel that never reaches `/init` reboots
+  into the same bad slot; the unit then needs the Rescue entry or a technician.
+  Firmware-level counting (systemd-boot boot counting) would close this and is a
+  separate change.
 - Confirmation is time-based: 25 seconds of a live UI process. An image that
   starts, looks fine for half a minute and then fails will be confirmed and kept.
 - Delivery is manual (USB stick, or a script on the fleet server). There is no

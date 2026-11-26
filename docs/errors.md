@@ -58,6 +58,7 @@ deliberately not reachable over the network.
 | E9003 | error | no writable boot partition for the update |
 | E9004 | error | update bundle unreadable, or the write failed |
 | W9001 | warning | the new slot never confirmed itself, the previous image is booted |
+| W9002 | warning | no `HWBOOT` partition found, the update channel is disabled |
 
 ---
 
@@ -241,6 +242,24 @@ tries, `/boot/slot-<x>/initrd` is the new payload, `/boot/ver-<x>` the new
 version, and the serial log on the next boot prints `hartwell-os: boot slot x`
 followed by `hartwell-os: boot ...`. See `docs/updates.md` for the bundle format
 and the vendor-side commands.
+
+## W9002 — no boot partition
+
+**Symptom.** The serial log says `hartwell-os: no HWBOOT partition found,
+update channel disabled`, and `hwo update` later answers E9003 even though the
+unit boots from a disk.
+
+**Cause.** `/init` tries to mount a VFAT partition that holds `loader/` at
+`/boot`, retrying every 0.5 s for 30 s. If the disk never shows up, or the boot
+partition is formatted as something else, nothing is mounted and the update
+channel stays closed.
+
+**Fix.** The boot partition must be VFAT and carry the `HWBOOT` label
+(`fatlabel` on a workstation, or `mkfs.vfat -n HWOBOOT` when re-imaging), then
+reboot. In rescue mode `blkid /dev/vda1` shows the truth, e.g.
+`LABEL="HWBOOT" TYPE="vfat"`. The mount is retried for 30 s because a virtio
+disk can be probed well after `/init` starts; a normal unit logs
+`hartwell-os: boot partition mounted at /boot after <n>s uptime`.
 
 ## W9001 — update not confirmed
 

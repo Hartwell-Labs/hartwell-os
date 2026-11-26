@@ -69,12 +69,32 @@ fi
 # and hwo update then says so (E9003) instead of pretending to update.
 mkdir -p /boot
 bootmounted=0
-for d in /dev/vda1 /dev/sda1 /dev/nvme0n1p1 /dev/mmcblk0p1; do
-    [ -b "$d" ] || continue
-    case "$(blkid "$d" 2>/dev/null)" in
-    *'LABEL="HWBOOT"'*) mount -t vfat -o rw,iocharset=utf8,umask=0022 "$d" /boot 2>/dev/null && bootmounted=1 && break ;;
-    esac
+# the partition node can appear well after /init starts (the virtio disk is
+# probed asynchronously), so keep trying for up to 30 s: a missed mount
+# silently disables the whole update channel. Do not trust blkid here, it can
+# answer "nothing" while the device is still being brought up -- mounting is
+# the only check that matters, and a real ESP is one that holds loader/.
+attempt=0
+while [ "$bootmounted" = 0 ] && [ "$attempt" -lt 60 ]; do
+    for d in /dev/vda1 /dev/sda1 /dev/nvme0n1p1 /dev/mmcblk0p1 /dev/vda /dev/sda; do
+        [ -b "$d" ] || continue
+        mount -t vfat -o rw,iocharset=utf8,umask=0022 "$d" /boot 2>/dev/null || continue
+        if [ -d /boot/loader ]; then
+            bootmounted=1
+            break
+        fi
+        umount /boot 2>/dev/null
+    done
+    attempt=$((attempt + 1))
+    [ "$bootmounted" = 1 ] && break
+    sleep 0.5
 done
+if [ "$bootmounted" = 1 ]; then
+    echo "hartwell-os: boot partition mounted at /boot after $(cut -d' ' -f1 /proc/uptime)s uptime"
+else
+    echo "hartwell-os: no HWBOOT partition found, update channel disabled"
+    /hwo err W9002 no HWBOOT partition, updates disabled
+fi
 
 # boot slots: the update channel installs into the slot that is not running and
 # flips /boot/state. Until the new image calls "hwo bootconfirm" its attempt

@@ -155,7 +155,14 @@ static int write_state(const struct bootstate *s)
  */
 #define ENTRY_REL "loader/entries/zz-hartwell.conf"
 
-static int point_loader_at(const char *slot)
+static int slot_has_kernel(const char *slot)
+{
+    char p[600];
+    snprintf(p, sizeof p, "%s/slot-%s/vmlinuz", boot_root(), slot);
+    return access(p, R_OK) == 0;
+}
+
+static int point_loader_at(const char *slot, int with_kernel)
 {
     char path[512];
     snprintf(path, sizeof path, "%s/%s", boot_root(), ENTRY_REL);
@@ -180,6 +187,11 @@ static int point_loader_at(const char *slot)
 
         if (!strncmp(one, "initrd", 6)) {
             o += (size_t)snprintf(out + o, sizeof out - o, "initrd /slot-%s/initrd\n", slot);
+        } else if (!strncmp(one, "linux", 5)) {
+            char lp[64];
+            if (with_kernel) snprintf(lp, sizeof lp, "/slot-%s/vmlinuz", slot);
+            else             snprintf(lp, sizeof lp, "/vmlinuz");
+            o += (size_t)snprintf(out + o, sizeof out - o, "linux %s\n", lp);
         } else if (!strncmp(one, "options", 7)) {
             char opts[600];
             snprintf(opts, sizeof opts, "%s", one + 7);
@@ -302,11 +314,19 @@ int hwo_update(const char *bundle, int force)
     }
     hdr[off] = 0;
 
-    char verbuf[32], hashbuf[96], sigbuf[160];
+    char verbuf[32], hashbuf[96], sigbuf[160], ibuf[96], kbuf[96], klenbuf[32];
     const char *ver  = field(hdr, "version", verbuf, sizeof verbuf);
     const char *hash = field(hdr, "hash", hashbuf, sizeof hashbuf);
     const char *sig  = field(hdr, "sig", sigbuf, sizeof sigbuf);
-    if (!ver || !hash || !sig) {
+    const char *ihash = field(hdr, "initrd", ibuf, sizeof ibuf);
+    if (!ihash) ihash = hash;
+    const char *khash = field(hdr, "kernel", kbuf, sizeof kbuf);
+    const char *klens = field(hdr, "kernellen", klenbuf, sizeof klenbuf);
+    long klen = klens ? strtol(klens, NULL, 10) : -1;
+    /* v2 bundles carry the kernel too; v1 replaced the initramfs only and are
+     * still accepted so an older signed bundle keeps working */
+    int with_kernel = (klen > 0 && khash && strlen(khash) == 64);
+    if (!ver || !ihash || strlen(ihash) != 64 || !sig || (klen > 0 && !with_kernel)) {
         close(fd);
         hwo_note('E', "E9004", "manifest missing version/hash/sig");
         return 1;
@@ -314,7 +334,12 @@ int hwo_update(const char *bundle, int force)
 
     /* the signature covers the manifest lines, in the order they are produced */
     char msg[HDR_MAX + 64];
-    snprintf(msg, sizeof msg, "HWO-UPDATE 1\nversion=%s\nhash=%s\n", ver, hash);
+    if (with_kernel)
+        snprintf(msg, sizeof msg,
+                 "HWO-UPDATE 2\nversion=%s\nkernel=%s\nkernellen=%ld\ninitrd=%s\n",
+                 ver, khash, klen, ihash);
+    else
+        snprintf(msg, sizeof msg, "HWO-UPDATE 1\nversion=%s\nhash=%s\n", ver, hash);
 
     unsigned char pk[32], sg[64];
     static const char *pubhex = HWO_LIC_PUB_HEX;
@@ -345,7 +370,7 @@ int hwo_update(const char *bundle, int force)
     read_state(&st);
     /* never touch the running slot: the new image goes to the other one */
     const char *target = !strcmp(st.active, "a") ? "b" : "a";
-    char out[600], tmp[620], sdir[512];
+    char out[600], tmp[620], sdir[512], kout[600], ktmp[620];
     snprintf(sdir, sizeof sdir, "%s/slot-%s", boot_root(), target);
     if (mkdir(sdir, 0755) != 0 && errno != EEXIST) {
         close(fd);
@@ -354,6 +379,8 @@ int hwo_update(const char *bundle, int force)
     }
     snprintf(out, sizeof out, "%s/initrd", sdir);
     snprintf(tmp, sizeof tmp, "%s/initrd.new", sdir);
+    snprintf(kout, sizeof kout, "%s/vmlinuz", sdir);
+    snprintf(ktmp, sizeof ktmp, "%s/vmlinuz.new", sdir);
 
     int ofd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (ofd < 0) {
@@ -362,17 +389,52 @@ int hwo_update(const char *bundle, int force)
         return 1;
     }
 
-    crypto_blake2b_ctx ctx;
-    crypto_blake2b_init(&ctx, 32);
     char buf[65536];
     size_t total = 0;
     ssize_t r;
+
+    /* v2: the payload starts with the kernel, exactly kernellen bytes long */
+    unsigned char kdigest[32];
+    char kgot[65] = "";
+    if (with_kernel) {
+        int kfd = open(ktmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (kfd < 0) {
+            close(ofd); close(fd); unlink(tmp);
+            hwo_note('E', "E9003", "cannot write %s (%s)", ktmp, strerror(errno));
+            return 1;
+        }
+        crypto_blake2b_ctx kctx;
+        crypto_blake2b_init(&kctx, 32);
+        long left = klen;
+        while (left > 0 && (r = read(fd, buf, (size_t)(left < (long)sizeof buf ? left : (long)sizeof buf))) > 0) {
+            crypto_blake2b_update(&kctx, (const unsigned char *)buf, (size_t)r);
+            if (write(kfd, buf, (size_t)r) != r) {
+                close(kfd); close(ofd); close(fd); unlink(tmp); unlink(ktmp);
+                hwo_note('E', "E9004", "write failed to %s: %s", ktmp, strerror(errno));
+                return 1;
+            }
+            left -= r;
+        }
+        fsync(kfd);
+        close(kfd);
+        crypto_blake2b_final(&kctx, kdigest);
+        to_hex(kdigest, 32, kgot);
+        if (left != 0 || strcmp(kgot, khash) != 0) {
+            close(ofd); close(fd); unlink(tmp); unlink(ktmp);
+            hwo_note('E', "E9001", "update %s rejected: kernel hash", ver);
+            return 1;
+        }
+    }
+
+    crypto_blake2b_ctx ctx;
+    crypto_blake2b_init(&ctx, 32);
     while ((r = read(fd, buf, sizeof buf)) > 0) {
         crypto_blake2b_update(&ctx, (const unsigned char *)buf, (size_t)r);
         if (write(ofd, buf, (size_t)r) != r) {
             close(ofd);
             close(fd);
             unlink(tmp);
+            if (with_kernel) unlink(ktmp);
             hwo_note('E', "E9004", "write failed to %s: %s", tmp, strerror(errno));
             return 1;
         }
@@ -386,16 +448,42 @@ int hwo_update(const char *bundle, int force)
     crypto_blake2b_final(&ctx, digest);
     char got[65];
     to_hex(digest, 32, got);
-    if (strcmp(got, hash) != 0) {
+    if (strcmp(got, ihash) != 0) {
         unlink(tmp);
+        if (with_kernel) unlink(ktmp);
         hwo_note('E', "E9001", "update %s rejected: payload hash", ver);
         return 1;
     }
 
     if (rename(tmp, out) != 0) {
         unlink(tmp);
+        if (with_kernel) unlink(ktmp);
         hwo_note('E', "E9004", "cannot swap %s into place: %s", out, strerror(errno));
         return 1;
+    }
+    if (with_kernel && rename(ktmp, kout) != 0) {
+        unlink(ktmp);
+        hwo_note('E', "E9004", "cannot swap %s into place: %s", kout, strerror(errno));
+        return 1;
+    }
+    int slot_kernel = with_kernel;
+    if (!with_kernel) {
+        /* v1 bundle: the slot has no kernel of its own yet, so it borrows the
+         * one the unit is running; the entry then boots the slot's copy */
+        char src[600];
+        snprintf(src, sizeof src, "%s/slot-%s/vmlinuz", boot_root(), st.active);
+        int sfd = open(src, O_RDONLY);
+        int dfd = sfd >= 0 ? open(kout, O_WRONLY | O_CREAT | O_TRUNC, 0644) : -1;
+        if (dfd >= 0) {
+            ssize_t n;
+            while ((n = read(sfd, buf, sizeof buf)) > 0) {
+                if (write(dfd, buf, (size_t)n) != n) break;
+            }
+            fsync(dfd);
+            close(dfd);
+        }
+        if (sfd >= 0) close(sfd);
+        slot_kernel = slot_has_kernel(target);
     }
 
     write_version(target, ver);
@@ -412,12 +500,12 @@ int hwo_update(const char *bundle, int force)
         hwo_note('E', "E9003", "cannot record slot state on the boot partition");
         return 1;
     }
-    point_loader_at(target);
+    point_loader_at(target, slot_kernel);
 
     sync();
-    printf("update %s applied, %zu bytes into slot %s; reboot to run it\n"
+    printf("update %s applied (%s + %zu byte initramfs) into slot %s; reboot to run it\n"
            "slot %s is kept as the fallback until the new image confirms\n",
-           ver, total, target, was);
+           ver, with_kernel ? "kernel" : "initramfs only", total, target, was);
     return 0;
 }
 
@@ -465,7 +553,7 @@ int hwo_boot_rollback(void)
         hwo_note('E', "E9003", "cannot roll back: boot partition read-only");
         return 1;
     }
-    point_loader_at(back);
+    point_loader_at(back, slot_has_kernel(back));
     char v[32];
     installed_version(v, sizeof v);
     sync();
