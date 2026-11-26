@@ -34,7 +34,7 @@ It never leaves the vendor machine; `keys/` is git-ignored.
 
 ## Tested end to end
 
-`tools/ab-qemu-test.py` drives the real ARM64 image in QEMU through three boots:
+`tools/ab-qemu-test.py` drives the real ARM64 image in QEMU through four boots:
 
 ```sh
 ./tools/ab-qemu-test.py --image dist/hartwell-os-1.0-arm64.img \
@@ -42,11 +42,16 @@ It never leaves the vendor machine; `keys/` is git-ignored.
 ```
 
 It installs a bundle from rescue mode, checks that the inactive slot received
-kernel and initramfs while the running slot was untouched, boots the new slot
-until the UI watchdog confirms it, then forces `tries=0` on the next boot and
-expects the unit to log W9001, rewrite the loader entry and come back on the old
-slot. It needs docker (for `qemu-system-aarch64` and mtools) and a built
-`build/hwo-lic`; it works on a copy, so the shipped image is never touched.
+kernel and initramfs while the running slot was untouched, then boots the new
+slot and stops the VM before the watchdog can confirm: the entry on the ESP has
+to have been renamed by the loader itself, `zz-live+3-0.conf` to
+`zz-live+2-1.conf`. The next boot runs long enough to confirm, and the entry must
+come back as `+3-0` with no stale counted names left. The last boot renames the
+live entry to `zz-live+0-3.conf`, i.e. a slot the loader has marked bad: the
+fallback entry has to boot the previous slot, `/init` has to log W9001 and adopt
+it, and both entries must be rewritten so the adopted slot is live again. It
+needs docker (for `qemu-system-aarch64` and mtools) and a built `build/hwo-lic`;
+it works on a copy, so the shipped image is never touched.
 
 ## Apply it on the unit
 
@@ -75,18 +80,43 @@ the image the unit is using.
 
 ## Rollback
 
-`tries` is the number of boots the new slot gets to prove itself. Each boot of
-that slot decrements it in `/init`, before the UI starts, so a crash loop cannot
-run past it. When the UI has been up for 25 seconds, `hwo bootconfirm` deletes
-the counter and the slot is permanent. A boot that finds `tries=0` points the
-boot entry back at the previous slot, reboots, and logs **W9001**.
+There are two attempts turned at once, because they catch different failures.
 
-The boot menu is one live entry, `loader/entries/zz-hartwell.conf`, plus
-`aa-rescue.conf`. `hwo update` and `hwo rollback` rewrite the live entry's
-`initrd` and `hwo.slot=` rather than editing `default` in `loader.conf`: the
-`systemd-boot` shipped in these images ignores `default` and boots the entry
-that sorts last, so a second slot entry would win the menu on its own. One
-entry, rewritten in place, keeps the menu and `/boot/state` in agreement.
+**The loader counts first.** The live entry is `loader/entries/zz-live+3-0.conf`
+and the `+3-0` is read by `systemd-boot` as *three tries left, none used*. Every
+boot attempt renames it: `+2-1`, `+1-2`, `+0-3`. At zero the loader marks the
+entry bad, sorts it to the top of the menu, and boots the next one — the
+uncounted `zz-fallback.conf`, which points at the slot that ran before the
+update. This is the counter that survives a kernel panic before `/init`, a
+missing initramfs, or a `/init` that hangs: none of those reach the initramfs
+code that would otherwise count.
+
+**The initramfs counts second.** `/boot/state` still carries `tries=3`, and
+`/init` decrements it before the UI starts. That covers the case where the
+kernel boots but `/init` dies, and it is what `hwo rollback` acts on.
+
+**Confirmation resets both.** When the UI has been up for 25 seconds,
+`hwo bootconfirm` deletes `tries` from `/boot/state` and rewrites the live entry
+back to `zz-live+3-0.conf`, deleting the counted names the loader left behind.
+
+**A fallback is adopted, not fought.** If `/init` comes up on a slot that is not
+the active one, the loader gave up: it logs **W9001**, runs `hwo fallback <slot>`
+to swap `active`/`previous` in `/boot/state`, rewrites `zz-live+3-0.conf` for the
+slot that actually booted and `zz-fallback.conf` for the one that failed, and
+carries on without a reboot. Rescue is exempt: it boots slot a on purpose.
+
+```
+loader/entries/zz-live+3-0.conf     live slot, counted by the loader
+loader/entries/zz-fallback.conf     previous slot, uncounted, never picked while live is healthy
+loader/entries/aa-rescue.conf       shell; sorts first, so it is never auto-booted
+loader/loader.conf                  timeout only, no default
+```
+
+There is no `default` line: the `systemd-boot` in these images boots the entry
+that sorts last, and a bad entry sorts first, so the fallback is exactly what
+comes up when the live entry runs out of tries. `hwo update`, `hwo rollback`,
+`hwo bootconfirm` and `hwo fallback` rewrite these files in place; they never add
+entries.
 
 Manual control, for a technician who sees a bad image on screen:
 
@@ -122,7 +152,11 @@ valid 1.1.0 over installed 1.0.0   -> applied into slot b, payload byte-identica
                                      state active=b previous=a tries=3,
                                      entry now initrd /slot-b/initrd + hwo.slot=b,
                                      slot a untouched
-hwo bootconfirm                     -> tries line removed, slot b permanent
+zz-live+3-0.conf after a boot       -> renamed by the loader to zz-live+2-1.conf
+hwo bootconfirm                     -> tries line removed, entry back to zz-live+3-0.conf,
+                                       counted names deleted, slot b permanent
+zz-live+0-3.conf (loader gave up)   -> loader boots zz-fallback.conf (slot a), /init logs W9001,
+                                       adopts slot a, rewrites both entries
 hwo rollback                        -> state active=a, entry back to slot a, version reports 1.0.0
 same bundle again                  -> E9002
 payload byte flipped               -> E9001, no file left behind
@@ -139,11 +173,11 @@ no /boot (read-only image)         -> E9003
 - **Two slots, kernel included.** Each slot carries its own `vmlinuz` and
   `initrd`, so a kernel change is a normal update and the running slot is never
   overwritten. What is still outside the slots is `systemd-boot` itself.
-- **A kernel that panics before `/init` runs is not counted.** The attempts are
-  decremented by the initramfs, so a kernel that never reaches `/init` reboots
-  into the same bad slot; the unit then needs the Rescue entry or a technician.
-  Firmware-level counting (systemd-boot boot counting) would close this and is a
-  separate change.
+- **What boot counting does not cover.** A slot that boots the kernel, reaches
+  `/init` and fails *after* the 25 s confirmation is kept. A unit that loses the
+  ESP itself (bad flash, corruption) cannot boot either entry. Rescue always uses
+  slot a, so on a unit that has been updated twice the rescue image is the
+  original one, not the previous update.
 - Confirmation is time-based: 25 seconds of a live UI process. An image that
   starts, looks fine for half a minute and then fails will be confirmed and kept.
 - Delivery is manual (USB stick, or a script on the fleet server). There is no

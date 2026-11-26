@@ -45,6 +45,7 @@ static const ErrInfo ERRORS[] = {
     { "E9002", 'E', "update older than running",   "downgrade refused; pass force only with a signed bundle" },
     { "E9003", 'E', "no writable boot partition",  "the unit booted from read-only media; use a disk install or a USB stick with HWBOOT" },
     { "E9004", 'E', "update bundle unreadable",    "the manifest is missing or the write failed; re-copy the bundle" },
+    { "E9005", 'E', "fallback request invalid",    "\"hwo fallback\" takes the slot the loader booted (a or b)" },
     { NULL, 0, NULL, NULL }
 };
 

@@ -26,6 +26,7 @@
  * instead of pretending to update.
  */
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -145,15 +146,23 @@ static int write_state(const struct bootstate *s)
     return 0;
 }
 
-/* Point the boot menu at a slot.
+/* Boot counting.
  *
- * systemd-boot in these images does not honour `default`: it boots whichever
- * entry sorts last, which on an unattended unit means the menu decides the
- * image. So the one live entry, zz-hartwell.conf, is rewritten in place and the
- * slot it boots is therefore what /boot/state says. aa-rescue.conf sorts first
- * and is only reachable by hand from the menu.
+ * systemd-boot understands the "+tries-left-tries-done" suffix on an entry file
+ * name: it decrements tries-left on every boot attempt and skips the entry once
+ * that reaches zero. That counter is the only one that still works when the
+ * kernel dies before /init, so the live entry carries it. init keeps its own
+ * counter in /boot/state for failures after it starts, and "hwo bootconfirm"
+ * rewrites the live entry back to a full count once the UI has proven itself.
+ *
+ * The uncounted zz-fallback.conf entry always points at the slot that ran
+ * before the last update: when the live entry runs out of tries the loader
+ * falls through to the image that is known to have worked, and init adopts it.
  */
-#define ENTRY_REL "loader/entries/zz-hartwell.conf"
+#define ENTRY_DIR      "loader/entries"
+#define ENTRY_LIVE     "zz-live"
+#define ENTRY_FALLBACK "zz-fallback.conf"
+#define ENTRY_TRIES    3
 
 static int slot_has_kernel(const char *slot)
 {
@@ -162,17 +171,37 @@ static int slot_has_kernel(const char *slot)
     return access(p, R_OK) == 0;
 }
 
-static int point_loader_at(const char *slot, int with_kernel)
+static int entry_dir(char *out, size_t n)
 {
-    char path[512];
-    snprintf(path, sizeof path, "%s/%s", boot_root(), ENTRY_REL);
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return 0;   /* not a UEFI install, nothing to point */
+    snprintf(out, n, "%s/%s", boot_root(), ENTRY_DIR);
+    return access(out, F_OK) == 0;
+}
+
+/* rewrite one entry so it boots `slot`, keeping everything else it says */
+static int write_entry(const char *name, const char *slot, int with_kernel)
+{
+    char dir[512];
+    if (!entry_dir(dir, sizeof dir)) return 0;   /* not a UEFI install */
+
+    char path[600];
+    snprintf(path, sizeof path, "%s/%s", dir, name);
     char buf[1024];
-    ssize_t n = read(fd, buf, sizeof buf - 1);
-    close(fd);
-    if (n < 0) return 0;
-    buf[n] = 0;
+    int fd = open(path, O_RDONLY);
+    ssize_t n;
+    if (fd >= 0) {
+        n = read(fd, buf, sizeof buf - 1);
+        close(fd);
+        if (n < 0) return 0;
+        buf[n] = 0;
+    } else {
+        /* first time: no entry to preserve, write the stock one */
+        n = snprintf(buf, sizeof buf,
+                     "title Hartwell OS\n"
+                     "linux /slot-%s/vmlinuz\n"
+                     "initrd /slot-%s/initrd\n"
+                     "options console=ttyAMA0 console=tty0 quiet rdinit=/init "
+                     "video=1280x800 hwo.slot=%s\n", slot, slot, slot);
+    }
 
     char out[1200];
     size_t o = 0;
@@ -201,6 +230,7 @@ static int point_loader_at(const char *slot, int with_kernel)
                 char *e = opts + strcspn(opts, "\r\n");
                 snprintf(e, sizeof opts - (size_t)(e - opts), " hwo.slot=%s", slot);
             }
+            opts[strcspn(opts, "\r\n")] = 0;   /* the loop adds the newline back */
             o += (size_t)snprintf(out + o, sizeof out - o, "options%s\n", opts);
         } else if (o + len < sizeof out) {
             memcpy(out + o, one, len);
@@ -211,7 +241,7 @@ static int point_loader_at(const char *slot, int with_kernel)
     }
     out[o] = 0;
 
-    char tmp[520];
+    char tmp[620];
     snprintf(tmp, sizeof tmp, "%s.new", path);
     int ofd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (ofd < 0) return -1;
@@ -220,6 +250,40 @@ static int point_loader_at(const char *slot, int with_kernel)
     close(ofd);
     if (w != (ssize_t)o || rename(tmp, path) != 0) { unlink(tmp); return -1; }
     return 1;
+}
+
+/* drop the counted names the loader left behind, keeping `keep` */
+static void sweep_live(const char *keep)
+{
+    char dir[512];
+    if (!entry_dir(dir, sizeof dir)) return;
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (strncmp(e->d_name, ENTRY_LIVE, strlen(ENTRY_LIVE))) continue;
+        if (!strcmp(e->d_name, keep)) continue;
+        char p[800];
+        snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+        unlink(p);
+    }
+    closedir(d);
+}
+
+/* the live entry: the slot that should be running, counted by the loader */
+static int point_loader_at(const char *slot, int with_kernel)
+{
+    char name[64];
+    snprintf(name, sizeof name, ENTRY_LIVE "+%d-0.conf", ENTRY_TRIES);
+    int r = write_entry(name, slot, with_kernel);
+    if (r > 0) sweep_live(name);
+    return r;
+}
+
+/* the entry the loader falls through to when the live one is out of tries */
+static int point_fallback_at(const char *slot, int with_kernel)
+{
+    return write_entry(ENTRY_FALLBACK, slot, with_kernel);
 }
 
 static int write_version(const char *slot, const char *ver)
@@ -501,6 +565,9 @@ int hwo_update(const char *bundle, int force)
         return 1;
     }
     point_loader_at(target, slot_kernel);
+    /* the uncounted entry keeps the image that has been running so far; the
+     * loader lands there when the counted entry runs out of tries */
+    point_fallback_at(was, slot_has_kernel(was));
 
     sync();
     printf("update %s applied (%s + %zu byte initramfs) into slot %s; reboot to run it\n"
@@ -518,6 +585,8 @@ int hwo_boot_confirm(void)
         puts("no boot state, nothing to confirm");
         return 0;
     }
+    /* the loader counted this boot down; put its full count back */
+    point_loader_at(st.active, slot_has_kernel(st.active));
     if (st.tries < 0) {
         printf("slot %s already confirmed\n", st.active);
         return 0;
@@ -554,9 +623,45 @@ int hwo_boot_rollback(void)
         return 1;
     }
     point_loader_at(back, slot_has_kernel(back));
+    point_fallback_at(st.previous, slot_has_kernel(st.previous));
     char v[32];
     installed_version(v, sizeof v);
     sync();
     printf("rolled back to slot %s (%s); reboot to run it\n", back, v);
+    return 0;
+}
+
+/* the loader gave up on the active slot and booted the fallback entry: adopt
+ * what is actually running instead of arguing with it */
+int hwo_boot_fallback(const char *slot)
+{
+    if (!slot || (strcmp(slot, "a") && strcmp(slot, "b"))) {
+        hwo_note('E', "E9005", "fallback needs a slot (a or b)");
+        return 1;
+    }
+    struct bootstate st;
+    if (read_state(&st) != 0) {
+        hwo_note('E', "E9003", "cannot read slot state from the boot partition");
+        return 1;
+    }
+    if (!strcmp(st.active, slot)) {
+        printf("slot %s is already the active slot\n", slot);
+        return 0;
+    }
+    char was[8];
+    snprintf(was, sizeof was, "%s", st.active);
+    snprintf(st.previous, sizeof st.previous, "%s", was);
+    snprintf(st.active, sizeof st.active, "%s", slot);
+    st.tries = -1;
+    if (write_state(&st) != 0) {
+        hwo_note('E', "E9003", "cannot record slot state on the boot partition");
+        return 1;
+    }
+    point_loader_at(slot, slot_has_kernel(slot));
+    point_fallback_at(was, slot_has_kernel(was));
+    char v[32];
+    installed_version(v, sizeof v);
+    sync();
+    printf("adopted slot %s (%s) as active; slot %s is the fallback\n", slot, v, was);
     return 0;
 }

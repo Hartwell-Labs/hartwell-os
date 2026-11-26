@@ -123,6 +123,17 @@ if [ -n "$slot" ] && [ -f /boot/state ]; then
             echo "hartwell-os: slot $slot attempt $((3 - tries)) of 3"
         fi
     fi
+    # the loader ran out of tries on the active slot and booted the uncounted
+    # fallback entry: what is running now is the truth, so adopt it. Rescue is
+    # exempt, it boots slot a on purpose while another slot stays active.
+    if [ -n "$active" ] && [ "$active" != "$slot" ] &&
+       ! grep -q 'hwo.rescue=1' /proc/cmdline 2>/dev/null; then
+        echo "hartwell-os: loader fell back to slot $slot, slot $active did not come up"
+        /hwo err W9001 slot $active did not come up, running slot $slot
+        /hwo fallback "$slot" >/dev/null 2>&1
+        sync
+        active=$slot
+    fi
 fi
 
 # networking: outbound only. Bring up every NIC, take a DHCP lease, and set the

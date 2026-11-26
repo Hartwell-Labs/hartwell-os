@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""End-to-end A/B test on the real ARM64 image, in QEMU.
+"""End-to-end A/B and boot-counting test on the real ARM64 image, in QEMU.
 
 What it proves, in the booted appliance and not on a mock:
 
   1. hwo update installs into the inactive slot and the running slot is untouched
-  2. the unit boots the new slot, the UI runs, and the watchdog confirms it after
-     25 s, so /boot/state loses its `tries` line
-  3. an unconfirmed slot (tries=0) is dropped on the next boot: /init rolls back,
-     logs W9001, reboots, and the old slot is active again
+  2. the loader itself counts boot attempts in the entry file name
+     (zz-live+3-0.conf -> zz-live+2-1.conf on the next boot), which is the only
+     counter that survives a kernel panic before /init
+  3. the unit boots the new slot, the UI runs, and the watchdog confirms it after
+     25 s: the entry name goes back to +3-0 and /boot/state loses its `tries`
+  4. a live entry the loader has marked bad (+0-3) is skipped: the fallback
+     entry boots the previous slot, /init logs W9001, adopts it, and the two
+     entries are rewritten so the adopted slot is the live one
 
 The image copy is writable; the shipped image is not modified. Requires docker
 with qemu-system-aarch64 (Alpine container), mtools inside that container, and
@@ -27,10 +31,16 @@ import time
 
 ESP_OFFSET = 1048576
 CONTAINER = "hwo-abtest"
-ENTRY = """title Hartwell OS
+LIVE = "loader/entries/zz-live+3-0.conf"
+FALLBACK = "loader/entries/zz-fallback.conf"
+LIVE_HEAD = "+3-0"      # a fresh live entry, as build.sh and hwo write it
+# The shipped rescue entry keeps the shell on the framebuffer (tty0). A bench
+# with a serial cable puts ttyAMA0 last instead, which is where /dev/console and
+# therefore the shell's stdin end up; the test needs that to drive the unit.
+RESCUE = """title Rescue (shell, no UI)
 linux /slot-a/vmlinuz
 initrd /slot-a/initrd
-options console=tty0 console=ttyAMA0 quiet rdinit=/init video=1280x800 hwo.slot=a hwo.rescue=1
+options console=tty0 console=ttyAMA0 rdinit=/init video=1280x800 hwo.rescue=1
 """
 
 QEMU = (
@@ -89,6 +99,31 @@ def esp_write_state(work, active, previous, tries):
     mtools(work, 'mcopy -o -i "$D" /t/state.new ::state')
 
 
+def esp_write(work, name, local):
+    """copy a file staged in the work dir onto the ESP"""
+    return mtools(work, f'mcopy -o -i "$D" /t/{local} ::{name}')
+
+
+def esp_rename(work, src, dst):
+    return mtools(work, f'mren -i "$D" ::{src} ::{dst}')
+
+
+def esp_exists(work, name):
+    r = mtools(work, f'mdir -b -i "$D" ::{name}')
+    return name in r.stdout
+
+
+def to_serial(entry):
+    """put ttyAMA0 last: with tty0 last the kernel console is the framebuffer and
+    /init's log lines never reach the serial port the test is listening on"""
+    return entry.replace("console=ttyAMA0 console=tty0", "console=tty0 console=ttyAMA0")
+
+
+def esp_entries(work):
+    r = mtools(work, 'mdir -b -i "$D" ::/loader/entries')
+    return [l.strip().split("::/loader/entries/")[-1] for l in r.stdout.splitlines() if l.strip()]
+
+
 class Serial:
     def __init__(self, path, timeout=120):
         end = time.time() + timeout
@@ -120,6 +155,16 @@ class Serial:
         end = time.time() + seconds
         while time.time() < end:
             if needle in self.read(1.0):
+                return True
+        return False
+
+    def shell(self, seconds=120):
+        """wait until the rescue shell answers, not just the word 'rescue' in
+        the cmdline echo or the banner"""
+        end = time.time() + seconds
+        while time.time() < end:
+            out = self.run("echo HWO_READY", 4)
+            if "HWO_READY" in out:
                 return True
         return False
 
@@ -201,14 +246,11 @@ def main():
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
     shutil.copy(a.image, os.path.join(work, "disk.img"))
-    with open(os.path.join(work, "entry.conf"), "w") as f:
-        f.write(ENTRY)
 
     r = sh(f"./build/hwo-lic make-update keys {a.version} {a.bundle} > {work}/UPDATE.BIN")
     if r.returncode != 0:
         sys.exit("make-update failed: " + r.stderr)
-    r = mtools(work, 'mcopy -o -i "$D" /t/UPDATE.BIN ::UPDATE.BIN; '
-                     'mcopy -o -i "$D" /t/entry.conf ::loader/entries/zz-hartwell.conf')
+    r = mtools(work, 'mcopy -o -i "$D" /t/UPDATE.BIN ::UPDATE.BIN')
     if r.returncode != 0:
         sys.exit("cannot stage the bundle on the ESP: " + r.stderr)
 
@@ -220,11 +262,25 @@ def main():
     base_a = esp_md5(work, "slot-a/initrd")
     base_ver = esp_read(work, "ver-a").strip()
     print(f"   image: slot a initrd {base_a[:12]}, version {base_ver}")
+    installed = esp_entries(work)
+    print(f"   entries: {', '.join(sorted(installed))}")
+    if not esp_exists(work, LIVE) or not esp_exists(work, FALLBACK):
+        sys.exit(f"image has no {LIVE} / {FALLBACK}: {installed}")
 
+    # boot 1 hands the machine to the rescue entry and to nothing else: with the
+    # live and fallback entries out of the way the rescue entry is the only one
+    # the loader can pick, which is how a technician at the console forces it
     print("== boot 1: rescue, install the update ==")
+    esp_rename(work, "loader/entries/zz-fallback.conf", "loader/entries/zz-fallback.off")
+    esp_rename(work, "loader/entries/zz-live+3-0.conf", "loader/entries/zz-live.off")
+    with open(os.path.join(work, "rescue.conf"), "w") as f:
+        f.write(RESCUE)
+    r = esp_write(work, "loader/entries/aa-rescue.conf", "rescue.conf")
+    if r.returncode != 0:
+        sys.exit("cannot stage the rescue entry: " + r.stderr)
     ser = start_vm(work)
-    if not ser.wait_for("rescue", 150):
-        sys.exit("no rescue prompt; serial:\n" + ser.read(2)[-1200:])
+    if not ser.wait_for("rescue console", 180) or not ser.shell():
+        sys.exit("no rescue shell; serial:\n" + ser.read(2)[-1200:])
     out = ser.run("hwo update /boot/UPDATE.BIN", 30)
     print("   " + out.strip()[-300:].replace("\n", "\n   "))
     if "applied" not in out:
@@ -234,9 +290,10 @@ def main():
     ser.close()
     stop_vm(work)
 
+    entries = esp_entries(work)
     new_slot = "b" if esp_read(work, "ver-b").strip() else "a"
     old_slot = "a" if new_slot == "b" else "b"
-    print(f"   new slot {new_slot}, old slot {old_slot}")
+    print(f"   new slot {new_slot}, old slot {old_slot}, entries: {', '.join(sorted(entries))}")
 
     got_kernel, got_initrd = esp_md5(work, f"slot-{new_slot}/vmlinuz"), esp_md5(work, f"slot-{new_slot}/initrd")
     if got_kernel != kernel_md5:
@@ -247,56 +304,102 @@ def main():
         fails.append("running slot was modified by the update")
     if esp_read(work, f"ver-{new_slot}").strip() != a.version:
         fails.append(f"version marker is {esp_read(work, f'ver-{new_slot}').strip()!r}")
-    entry = esp_read(work, "loader/entries/zz-hartwell.conf")
-    if f"/slot-{new_slot}/vmlinuz" not in entry:
-        fails.append(f"boot entry does not point at slot {new_slot}")
+    if not esp_exists(work, LIVE):
+        fails.append(f"update did not write a counted live entry {LIVE}")
+    else:
+        entry = esp_read(work, LIVE)
+        if f"/slot-{new_slot}/vmlinuz" not in entry:
+            fails.append(f"live entry does not point at slot {new_slot}")
+        if f"hwo.slot={new_slot}" not in entry:
+            fails.append("live entry cmdline does not carry the new slot")
+    fb = esp_read(work, FALLBACK) if esp_exists(work, FALLBACK) else ""
+    if f"/slot-{old_slot}/vmlinuz" not in fb:
+        fails.append(f"fallback entry does not point at slot {old_slot}")
     if f"active={new_slot}" not in state:
         fails.append("state does not make the new slot active")
     if "tries=3" not in state:
         fails.append("state has no attempt counter for the new slot")
 
-    # hand the next boot to the UI, the way a real unit runs
-    with open(os.path.join(work, "entry.conf"), "w") as f:
-        f.write(entry.replace(" hwo.rescue=1", ""))
-    r = mtools(work, 'mcopy -o -i "$D" /t/entry.conf ::loader/entries/zz-hartwell.conf')
-    if r.returncode != 0:
-        sys.exit("cannot hand the entry to the UI: " + r.stderr)
+    # the same console swap for both remaining entries, so their /init logs land
+    # on the serial port instead of only on the screen
+    for name in (LIVE, FALLBACK):
+        text = esp_read(work, name) if esp_exists(work, name) else ""
+        if text and text != to_serial(text):
+            with open(os.path.join(work, "entry.conf"), "w") as f:
+                f.write(to_serial(text))
+            esp_write(work, name, "entry.conf")
 
-    print("== boot 2: new slot runs the UI, watchdog confirms it ==")
+    # boot 2: start the UI and kill the VM before the watchdog can confirm, so
+    # the only counter that ran is the loader's own one in the file name
+    print("== boot 2: the loader counts the attempt down (no confirmation) ==")
     ser = start_vm(work)
     if not ser.wait_for(f"boot slot {new_slot}", 180):
         fails.append(f"slot {new_slot} did not boot")
     if not ser.wait_for("init at", 60):
         fails.append("no /init on the new slot")
-    # the watchdog confirms after 25 s of a live UI
+    ser.close()
+    stop_vm(work)
+    counted = esp_entries(work)
+    print(f"   entries after the boot: {', '.join(sorted(counted))}")
+    if "zz-live+2-1.conf" not in counted:
+        fails.append(f"the loader did not count the boot down: {sorted(counted)}")
+    if "zz-live+3-0.conf" in counted:
+        fails.append("the loader left the freshly counted name in place")
+
+    # boot 3: let the watchdog confirm, which must reset the count to +3-0
+    print("== boot 3: the UI runs long enough to confirm the slot ==")
+    ser = start_vm(work)
+    if not ser.wait_for(f"boot slot {new_slot}", 180):
+        fails.append(f"slot {new_slot} did not boot on the second run")
+    if not ser.wait_for("init at", 60):
+        fails.append("no /init on the confirming boot")
     time.sleep(40)
     ser.close()
     stop_vm(work)
 
     state = esp_read(work, "state")
-    print("   /boot/state after boot 2:\n" + "\n".join("     " + l for l in state.strip().splitlines()))
+    print("   /boot/state after the confirming boot:\n" +
+          "\n".join("     " + l for l in state.strip().splitlines()))
     if f"active={new_slot}" not in state:
-        fails.append("new slot is not active after boot 2")
+        fails.append("new slot is not active after the confirming boot")
     if "tries" in state:
         fails.append("slot was not confirmed after 25 s of UI")
+    entries = esp_entries(work)
+    print(f"   entries: {', '.join(sorted(entries))}")
+    if "zz-live+3-0.conf" not in entries:
+        fails.append(f"confirming did not reset the count to +3-0: {sorted(entries)}")
+    if len([e for e in entries if e.startswith("zz-live")]) != 1:
+        fails.append(f"stale counted entries left behind: {sorted(entries)}")
 
-    print("== boot 3: unconfirmed slot is dropped, unit returns to the old one ==")
-    esp_write_state(work, new_slot, old_slot, 0)
+    # boot 4: the loader has run out of tries and skips the live entry
+    print("== boot 4: a bad live entry (+0-3) falls through to the fallback ==")
+    esp_rename(work, "loader/entries/zz-live+3-0.conf", "loader/entries/zz-live+0-3.conf")
     ser = start_vm(work)
-    if not ser.wait_for("rolling back", 180):
-        fails.append("no rollback on an unconfirmed slot")
     if not ser.wait_for(f"boot slot {old_slot}", 180):
-        fails.append(f"unit did not come back on slot {old_slot}")
+        fails.append(f"the fallback slot {old_slot} did not boot")
+    if not ser.wait_for("fell back", 60):
+        fails.append("init did not notice that it was running the fallback slot")
     ser.close()
     stop_vm(work)
 
     state = esp_read(work, "state")
-    print("   /boot/state after rollback:\n" + "\n".join("     " + l for l in state.strip().splitlines()))
+    print("   /boot/state after the fallback:\n" +
+          "\n".join("     " + l for l in state.strip().splitlines()))
     if f"active={old_slot}" not in state:
-        fails.append("rollback did not make the old slot active")
-    entry = esp_read(work, "loader/entries/zz-hartwell.conf")
-    if f"/slot-{old_slot}/vmlinuz" not in entry:
-        fails.append("boot entry still points at the dropped slot")
+        fails.append("the fallback slot was not adopted")
+    if f"previous={new_slot}" not in state:
+        fails.append("the dropped slot is not remembered as the previous one")
+    entries = esp_entries(work)
+    print(f"   entries: {', '.join(sorted(entries))}")
+    if "zz-live+3-0.conf" not in entries:
+        fails.append(f"the adopted slot has no fresh counted entry: {sorted(entries)}")
+    else:
+        entry = esp_read(work, LIVE)
+        if f"/slot-{old_slot}/vmlinuz" not in entry:
+            fails.append("the live entry still points at the dropped slot")
+    fb = esp_read(work, FALLBACK) if esp_exists(work, FALLBACK) else ""
+    if f"/slot-{new_slot}/vmlinuz" not in fb:
+        fails.append("the fallback entry does not point back at the dropped slot")
     if esp_read(work, f"ver-{new_slot}").strip() != a.version:
         fails.append("dropped slot lost its version marker")
 
@@ -307,9 +410,10 @@ def main():
     if fails:
         print("FAIL: " + "; ".join(fails))
         return 1
-    print(f"PASS: update into slot {new_slot} ({a.version}), kernel and initramfs "
-          f"verified, confirmed by the UI watchdog, slot {old_slot} kept the "
-          f"running system and got it back after a forced rollback")
+    print(f"PASS: update into slot {new_slot} ({a.version}) with kernel and "
+          f"initramfs verified; the loader counted the attempt in the entry name "
+          f"and the watchdog reset it; a bad entry fell through to slot "
+          f"{old_slot}, which init adopted and made live again")
     return 0
 
 

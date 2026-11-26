@@ -57,6 +57,7 @@ deliberately not reachable over the network.
 | E9002 | error | update is older than the running image (downgrade refused) |
 | E9003 | error | no writable boot partition for the update |
 | E9004 | error | update bundle unreadable, or the write failed |
+| E9005 | error | `hwo fallback` was called without a slot (`a` or `b`) |
 | W9001 | warning | the new slot never confirmed itself, the previous image is booted |
 | W9002 | warning | no `HWBOOT` partition found, the update channel is disabled |
 
@@ -263,16 +264,26 @@ disk can be probed well after `/init` starts; a normal unit logs
 
 ## W9001 — update not confirmed
 
-**Symptom.** The serial log on boot says `slot b never confirmed, rolling back
-to a`, then the unit reboots into the previous image and the UI comes up
-normally.
+**Symptom.** One of two lines on the serial log, then the UI of the previous
+image:
+
+```
+hartwell-os: slot b never confirmed, rolling back to a     (initramfs counter)
+hartwell-os: loader fell back to slot a, slot b did not come up   (loader counter)
+```
 
 **Cause.** The update was installed into the inactive slot, but that image never
-reached a live UI long enough to call `hwo bootconfirm` within its three boot
-attempts. Usual reasons: a GPU driver the new image loads differently, a crashed
-UI, or a broken licence file on `/state`.
+reached a live UI long enough to call `hwo bootconfirm`. Two independent
+counters are turned on every boot: `systemd-boot` renames the live entry
+`zz-live+3-0.conf` to `+2-1`, `+1-2`, `+0-3` and stops offering it at zero, and
+`/init` decrements `tries` in `/boot/state`. The first line means `/init` was
+reached and used up `tries`; the second means the loader had already given up
+before `/init` ran — a kernel panic, a missing initramfs, or an `/init` that
+never got far enough to write the state file. Usual reasons: a GPU driver the new
+image loads differently, a crashed UI, a broken licence file on `/state`, a
+corrupt kernel in the slot.
 
-**Fix.** Nothing on the unit: the rollout is already undone. On the bench, boot
-the image with `hwo.debug=1` to see the module log, or run `hwo rollback` by hand
-to force the fallback before it expires. Details in `docs/updates.md`,
-"Rollback".
+**Fix.** Nothing on the unit: the fallback is adopted and the entries are
+rewritten, so the next boot is normal again. On the bench, boot the image with
+`hwo.debug=1` to see the module log, or run `hwo rollback` by hand to force the
+fallback before it expires. Details in `docs/updates.md`, "Rollback".

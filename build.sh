@@ -134,18 +134,24 @@ if [ "$ARCH" = arm64 ]; then
     mcopy -i "$D" /b/vmlinuz ::slot-b/vmlinuz
     mcopy -i "$D" /b/initrd ::slot-a/initrd
     mcopy -i "$D" /b/initrd ::slot-b/initrd
-    # one live entry plus rescue. This systemd-boot ignores `default` and boots
-    # the entry that sorts last, so the live entry is zz-hartwell.conf: whichever
-    # way the menu resolves, an unattended unit gets the slot stated in
-    # /boot/state (hwo update rewrites this file, it does not add entries).
-    printf "default zz-hartwell\ntimeout 5\n" > /tmp/loader.conf
-    printf "title Hartwell OS\nlinux /slot-a/vmlinuz\ninitrd /slot-a/initrd\noptions console=ttyAMA0 console=tty0 quiet rdinit=/init video=1280x800 hwo.slot=a\n" > /tmp/hwo.conf
+    # Boot counting. The live entry carries the loader'"'"'s own counter in its
+    # file name, zz-live+3-0.conf: every boot attempt turns it into +2-1, +1-2,
+    # +0-3 and at zero the loader skips it. That counter still works when the
+    # kernel dies before /init, which is why it lives in the name and not in
+    # /boot/state. zz-fallback.conf is uncounted and holds the previous slot,
+    # so running out of tries lands on an image that has already worked. No
+    # `default`: this systemd-boot boots the entry that sorts last, and a bad
+    # (zero-tries) entry sorts first, so the fallback is what comes up.
+    printf "timeout 5\n" > /tmp/loader.conf
+    printf "title Hartwell OS\nlinux /slot-a/vmlinuz\ninitrd /slot-a/initrd\noptions console=ttyAMA0 console=tty0 quiet rdinit=/init video=1280x800 hwo.slot=a\n" > "/tmp/zz-live+3-0.conf"
+    printf "title Hartwell OS (previous image)\nlinux /slot-b/vmlinuz\ninitrd /slot-b/initrd\noptions console=ttyAMA0 console=tty0 quiet rdinit=/init video=1280x800 hwo.slot=b\n" > /tmp/zz-fallback.conf
     # rescue always boots the original slot-a image: the image that has been
     # running since the unit was installed, never a half-tested update
     printf "title Rescue (shell, no UI)\nlinux /slot-a/vmlinuz\ninitrd /slot-a/initrd\noptions console=ttyAMA0 console=tty0 rdinit=/init video=1280x800 hwo.rescue=1\n" > /tmp/rescue.conf
     printf "active=a\nprevious=b\n" > /tmp/state
     mcopy -i "$D" /tmp/loader.conf ::loader/loader.conf
-    mcopy -i "$D" /tmp/hwo.conf ::loader/entries/zz-hartwell.conf
+    mcopy -i "$D" "/tmp/zz-live+3-0.conf" "::loader/entries/zz-live+3-0.conf"
+    mcopy -i "$D" /tmp/zz-fallback.conf ::loader/entries/zz-fallback.conf
     mcopy -i "$D" /tmp/rescue.conf ::loader/entries/aa-rescue.conf
     mcopy -i "$D" /tmp/state ::state
     mcopy -i "$D" /b/ver-a ::ver-a
